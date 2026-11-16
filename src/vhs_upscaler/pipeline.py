@@ -143,6 +143,11 @@ class ProcessOptions:
     # --- Estabilizacion ---
     deflicker: bool = False     # corrige el "bombeo" de brillo entre frames
     deflicker_window: int = 5   # frames de la media movil
+    # --- Exposicion automatica por escena ---
+    auto_exposure: bool = False        # nivela escenas de dia y de noche
+    auto_exposure_target: int = 56     # mediana de luma objetivo (0-255)
+    auto_exposure_strength: int = 80   # 0-100: cuanto de la correccion se aplica
+    auto_exposure_smoothing: int = 30  # frames de la media movil del exponente
     # --- Rendimiento y reanudacion ---
     fp16: bool = True           # usa la variante fp16 del modelo en GPU
     segment_seconds: int = DEFAULT_SEGMENT_SECONDS  # 0 = un solo tramo
@@ -321,6 +326,125 @@ class Deflicker:
         return out.astype(np.uint8)
 
 
+class AutoExposure:
+    """Nivela el brillo entre escenas de dia y de noche, sin tocar negros ni blancos.
+
+    Por que gamma y no un estirado de niveles: medido sobre una cinta familiar
+    real, una escena oscura y una clara tienen el MISMO punto de negro (p1=14)
+    y el MISMO punto de blanco (p99=229); lo unico que cambia es la mediana
+    (28 frente a 56). No hay histograma que estirar, asi que `normalize` (y
+    cualquier auto-levels) no solo no arregla nada: oscurece todavia mas.
+    Lo que hay que mover son los medios tonos, y eso es gamma.
+
+    La curva se aplica sobre el rango normalizado entre p1 y p99, de modo que
+    el negro sigue en su sitio y las altas luces no se queman: en la misma
+    prueba, el vestido blanco de la escena se mantuvo sin recortar.
+
+    Tres detalles que separan esto de un simple `eq=gamma`:
+
+    - **Suavizado temporal del EXPONENTE, no del pixel.** Si cada fotograma
+      eligiera su propio gamma, la imagen latiria.
+    - **Reinicio en los cortes de plano.** Sin esto se arrastra la exposicion
+      de la escena anterior durante el medio segundo siguiente al corte.
+    - **Tope de correccion.** Una escena nocturna a proposito debe seguir
+      pareciendo nocturna, no gris lavada.
+    """
+
+    def __init__(self, target: int = 56, strength: int = 80, smoothing: int = 30):
+        self.target = float(min(max(target, 16), 160))
+        self.strength = float(min(max(strength, 0), 100)) / 100.0
+        self._inv: deque[float] = deque(maxlen=max(2, int(smoothing)))
+        self._prev_small: np.ndarray | None = None
+        # Topes del exponente (1/gamma): por debajo de 1 aclara, por encima
+        # oscurece. Son ASIMETRICOS a proposito.
+        #
+        # Aclarar una escena oscura recupera caras que no se veian: merece la
+        # pena hasta gamma 2.2 (inv 0.45). Oscurecer una escena ya bien
+        # expuesta, en cambio, comprime las sombras contra el negro y hace
+        # desaparecer lo que hay en segundo plano; probado sobre una escena
+        # diurna de la cinta, bajarla al mismo nivel que una nocturna convertia
+        # la ropa oscura del fondo en un borron negro y hundia el p1 de 10 a 1.
+        #
+        # Asi que el objetivo funciona practicamente como SUELO: se aclara
+        # mucho si hace falta y se oscurece solo lo justo para quitar un brillo
+        # exagerado. Una escena soleada debe seguir pareciendo soleada.
+        self.min_inv, self.max_inv = 0.45, 1.12
+        # Diferencia media entre miniaturas que se considera corte de plano.
+        self.cut_threshold = 24.0
+
+    @staticmethod
+    def _thumb(frame_bgr: np.ndarray) -> np.ndarray:
+        """Miniatura en gris: las estadisticas no necesitan el frame entero."""
+        import cv2
+
+        small = frame_bgr[::4, ::4]
+        return cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+
+    def _is_cut(self, thumb: np.ndarray) -> bool:
+        prev, self._prev_small = self._prev_small, thumb
+        if prev is None or prev.shape != thumb.shape:
+            return True
+        diff = np.abs(thumb.astype(np.int16) - prev.astype(np.int16)).mean()
+        return bool(diff > self.cut_threshold)
+
+    def measure(self, frame_bgr: np.ndarray) -> float | None:
+        """Exponente 1/gamma para este fotograma, o None si no hay que tocarlo."""
+        thumb = self._thumb(frame_bgr)
+        if self._is_cut(thumb):
+            self._inv.clear()  # escena nueva: no arrastrar la exposicion anterior
+        black, white = np.percentile(thumb, (1.0, 99.0))
+        median = float(np.median(thumb))
+        # Fundido a negro, pantalla plana o cinta sin senal: nada que nivelar.
+        if white - black < 24.0 or median <= black + 1.0:
+            return None
+        span = white - black
+        x = (median - black) / span
+        y = (self.target - black) / span
+        x = min(max(x, 0.02), 0.98)
+        y = min(max(y, 0.02), 0.98)
+        inv = float(np.log(y) / np.log(x))
+        # strength interpola hacia 1.0 (sin correccion).
+        inv = 1.0 + (inv - 1.0) * self.strength
+        inv = min(max(inv, self.min_inv), self.max_inv)
+        self._inv.append(inv)
+        return sum(self._inv) / len(self._inv)
+
+    def apply(self, frame_bgr: np.ndarray) -> np.ndarray:
+        import cv2
+
+        inv = self.measure(frame_bgr)
+        if inv is None or abs(inv - 1.0) < 0.01:
+            return frame_bgr
+        thumb = self._prev_small
+        black, white = np.percentile(thumb, (1.0, 99.0))
+        span = max(white - black, 1.0)
+        x = np.arange(256, dtype=np.float32)
+        # La curva actua SOLO entre el negro y el blanco medidos; fuera de ese
+        # tramo se deja el valor tal cual. Recortar con clip en vez de esto
+        # aplastaba contra el negro todo lo que cayera por debajo de p1 (que es
+        # el 1 % mas oscuro, mas lo que la miniatura no alcanza a ver): medido,
+        # subia el negro de 14 a 28 al aclarar y lo hundia de 10 a 1 al
+        # oscurecer. Los extremos deben quedarse donde estan.
+        t = np.clip((x - black) / span, 0.0, 1.0)
+        curva = black + (t ** inv) * span
+        dentro = (x > black) & (x < white)
+        lut = np.where(dentro, curva, x)
+        lut = np.clip(lut, 0, 255).astype(np.uint8)
+        # La misma curva en los tres canales: mantiene el tono y sube un punto
+        # la saturacion de los medios, que en VHS desvaido sienta bien. Tocar
+        # solo la luma dejaria el croma corto y la imagen saldria deslavada.
+        return cv2.LUT(frame_bgr, lut)
+
+
+def build_auto_exposure(opts: ProcessOptions) -> AutoExposure:
+    """Crea el corrector a partir de las opciones (lo usan pipeline y vista previa)."""
+    return AutoExposure(
+        target=opts.auto_exposure_target,
+        strength=opts.auto_exposure_strength,
+        smoothing=opts.auto_exposure_smoothing,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Entorno de subprocesos
 # ---------------------------------------------------------------------------
@@ -492,7 +616,8 @@ _FINGERPRINT_FIELDS = (
     "brightness", "contrast", "saturation", "deband", "grain", "grain_strength",
     "interpolate_fps", "target_width", "target_height", "start_seconds",
     "max_seconds", "color_range", "color_matrix", "deflicker", "deflicker_window",
-    "source_sar",
+    "source_sar", "auto_exposure", "auto_exposure_target", "auto_exposure_strength",
+    "auto_exposure_smoothing",
 )
 
 
@@ -630,6 +755,10 @@ class VideoProcessor:
                 log(f"Filtros VHS: {', '.join(filtros)}")
         if opts.deflicker:
             log(f"Estabilizacion de brillo activa (ventana de {opts.deflicker_window} frames).")
+        if opts.auto_exposure:
+            log(f"Exposicion automatica activa: mediana objetivo "
+                f"{opts.auto_exposure_target}, intensidad {opts.auto_exposure_strength}%, "
+                f"suavizado {opts.auto_exposure_smoothing} frames.")
 
         upscaler = create_upscaler(opts.model_id, opts.device, log=log, fp16=opts.fp16)
         if upscaler.warning:
@@ -795,6 +924,7 @@ class VideoProcessor:
         q_sr: queue.Queue = queue.Queue(maxsize=4)
         errors: list[BaseException] = []
         deflicker = Deflicker(opts.deflicker_window) if opts.deflicker else None
+        exposure = build_auto_exposure(opts) if opts.auto_exposure else None
 
         def read_frames():
             try:
@@ -845,8 +975,13 @@ class VideoProcessor:
                 frame = q_raw.get()
                 if frame is None:
                     break
+                # Orden deliberado: primero el deflicker, que quita el temblor
+                # de alta frecuencia del AGC, y luego la exposicion, que decide
+                # el nivel de la escena sobre una senal ya estable.
                 if deflicker is not None:
                     frame = deflicker.apply(frame)
+                if exposure is not None:
+                    frame = exposure.apply(frame)
                 q_sr.put(upscaler.upscale(frame))
                 done += 1
                 progress(done, expected)

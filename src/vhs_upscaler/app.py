@@ -26,7 +26,8 @@ from .resolutions import build_output_sizes
 from .logging_setup import LOG_PATH, log_to, setup_logging
 from .pipeline import (
     EXPORT_FORMATS, ProcessOptions, ProcessingCancelled, VideoProcessor,
-    add_grain, extract_filtered_frame, find_resumable_jobs, fit_to_canvas,
+    add_grain, build_auto_exposure, extract_filtered_frame, find_resumable_jobs,
+    fit_to_canvas,
 )
 from .vs_backend import qtgmc_available
 
@@ -133,6 +134,10 @@ class PreviewWorker(QThread):
 
             self.logged.emit("Generando vista previa (1 frame)...")
             frame = extract_filtered_frame(self.opts, self.second)
+            if self.opts.auto_exposure:
+                # Un solo fotograma: no hay historial que suavizar, pero el
+                # gamma que se calcula es el mismo que usaria el export.
+                frame = build_auto_exposure(self.opts).apply(frame)
             if self.cancel_event.is_set():
                 return
             upscaler = create_upscaler(self.opts.model_id, self.opts.device,
@@ -436,6 +441,39 @@ class ConfigPage(QWidget):
         )
         vhs.addWidget(self.deflicker_check, 13, 0, 1, 2)
 
+        self.autoexp_check = QCheckBox(
+            "Nivelar escenas de dia y de noche (exposicion automatica)")
+        self.autoexp_check.setChecked(cfg.auto_exposure)
+        self.autoexp_check.setToolTip(
+            "En una cinta familiar hay escenas al sol y escenas de interior o de "
+            "noche, y la misma correccion no sirve para las dos.\n\n"
+            "Esto mide cada fotograma y corrige la GAMMA para acercar los medios "
+            "tonos al objetivo, dejando el negro y el blanco donde estaban (no "
+            "quema las altas luces ni lava los negros).\n\n"
+            "Detecta los cortes de plano para no arrastrar la exposicion de una "
+            "escena a la siguiente, y suaviza la correccion entre fotogramas "
+            "para que la imagen no lata."
+        )
+        vhs.addWidget(self.autoexp_check, 16, 0, 1, 2)
+
+        self.autoexp_target = self._make_slider(16, 160, cfg.auto_exposure_target)
+        self.autoexp_target.setToolTip(
+            "Mediana de luma a la que se lleva cada escena. 56 es el valor medido "
+            "en escenas bien expuestas de una cinta familiar tipica. Subelo si "
+            "todo queda oscuro; bajalo si las noches pierden ambiente."
+        )
+        vhs.addWidget(QLabel("Brillo objetivo:"), 17, 0)
+        vhs.addWidget(self._labeled_slider(self.autoexp_target, "oscuro", "claro"), 17, 1)
+
+        self.autoexp_strength = self._make_slider(0, 100, cfg.auto_exposure_strength)
+        self.autoexp_strength.setToolTip(
+            "Cuanto de la correccion calculada se aplica. Al 100 % todas las "
+            "escenas quedan al mismo nivel; por debajo se conserva parte de la "
+            "diferencia original entre dia y noche, que suele verse mas natural."
+        )
+        vhs.addWidget(QLabel("Intensidad:"), 18, 0)
+        vhs.addWidget(self._labeled_slider(self.autoexp_strength, "sutil", "total"), 18, 1)
+
         self.range_combo = QComboBox()
         self.range_combo.addItem("Automatico (leer del archivo)", "auto")
         self.range_combo.addItem("Limitado 16-235 (TV, lo habitual)", "limited")
@@ -446,8 +484,8 @@ class ConfigPage(QWidget):
             "negros salen aplastados o lavados y ya no hay vuelta atras. "
             "Dejalo en automatico salvo que el analisis diga otra cosa."
         )
-        vhs.addWidget(QLabel("Rango de color del origen:"), 14, 0)
-        vhs.addWidget(self.range_combo, 14, 1)
+        vhs.addWidget(QLabel("Rango de color del origen:"), 19, 0)
+        vhs.addWidget(self.range_combo, 19, 1)
 
         self.matrix_combo = QComboBox()
         self.matrix_combo.addItem("Automatico (segun la resolucion)", "auto")
@@ -458,8 +496,8 @@ class ConfigPage(QWidget):
             "Matriz de conversion del ORIGEN. Una captura de VHS es SD, es "
             "decir BT.601; usar BT.709 por error tine los colores."
         )
-        vhs.addWidget(QLabel("Matriz de color del origen:"), 15, 0)
-        vhs.addWidget(self.matrix_combo, 15, 1)
+        vhs.addWidget(QLabel("Matriz de color del origen:"), 20, 0)
+        vhs.addWidget(self.matrix_combo, 20, 1)
         layout.addWidget(vhs_box)
 
         # --- Salida ---
@@ -637,11 +675,13 @@ class ConfigPage(QWidget):
             self.deint_check, self.double_fps_check, self.denoise_check,
             self.chroma_check, self.color_check, self.deband_check,
             self.grain_check, self.mono_check, self.deflicker_check,
+            self.autoexp_check,
         ):
             widget.stateChanged.connect(self._mark_custom)
         for widget in (
             self.denoise_slider, self.brightness, self.contrast, self.saturation,
             self.bitrate_spin, self.grain_slider,
+            self.autoexp_target, self.autoexp_strength,
         ):
             widget.valueChanged.connect(self._mark_custom)
         for spin in self.crop_spins.values():
@@ -1035,6 +1075,9 @@ class MainWindow(QMainWindow):
             f"Filtros: denoise={opts.denoise} (chroma={opts.chroma_denoise}), "
             f"color={opts.color_correct}, deband={opts.deband}, "
             f"grano={opts.grain} ({opts.grain_strength if opts.grain else '-'}), "
+            f"exposicion_auto={opts.auto_exposure}"
+            + (f" (objetivo {opts.auto_exposure_target}, "
+               f"{opts.auto_exposure_strength}%)" if opts.auto_exposure else "") + ", "
             f"fps_interp={opts.interpolate_fps or 'no'}",
         ]
         if aviso:
@@ -1074,6 +1117,9 @@ class MainWindow(QMainWindow):
         cfg.color_range = cp.range_combo.currentData()
         cfg.color_matrix = cp.matrix_combo.currentData()
         cfg.deflicker = cp.deflicker_check.isChecked()
+        cfg.auto_exposure = cp.autoexp_check.isChecked()
+        cfg.auto_exposure_target = cp.autoexp_target.value()
+        cfg.auto_exposure_strength = cp.autoexp_strength.value()
         cfg.segment_minutes = cp.segment_spin.value()
         cfg.resume = cp.resume_check.isChecked()
         cfg.fp16 = cp.fp16_check.isChecked()
@@ -1100,6 +1146,10 @@ class MainWindow(QMainWindow):
             source_sar=self.video_info.sar if self.video_info else 1.0,
             color_range=cfg.color_range, color_matrix=cfg.color_matrix,
             deflicker=cfg.deflicker, deflicker_window=cfg.deflicker_window,
+            auto_exposure=cfg.auto_exposure,
+            auto_exposure_target=cfg.auto_exposure_target,
+            auto_exposure_strength=cfg.auto_exposure_strength,
+            auto_exposure_smoothing=cfg.auto_exposure_smoothing,
             fp16=cfg.fp16, resume=cfg.resume,
             segment_seconds=cfg.segment_minutes * 60,
         )

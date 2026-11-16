@@ -89,6 +89,14 @@ def main() -> None:
                         help="Unifica el audio estereo a mono (canal central)")
     parser.add_argument("--deflicker", action="store_true",
                         help="Estabiliza el brillo entre frames (bombeo del AGC del reproductor)")
+    parser.add_argument("--auto-exposure", action="store_true",
+                        help="Nivela el brillo entre escenas de dia y de noche (gamma por escena)")
+    parser.add_argument("--auto-exposure-target", type=int, default=56,
+                        help="Mediana de luma objetivo 16-160 (mas alto = mas claro)")
+    parser.add_argument("--auto-exposure-strength", type=int, default=80,
+                        help="0-100: cuanto de la correccion se aplica")
+    parser.add_argument("--auto-exposure-smoothing", type=int, default=30,
+                        help="Frames de la media movil del exponente (mas = mas estable)")
     parser.add_argument("--color-range", default="auto", choices=["auto", "limited", "full"],
                         help="Rango del ORIGEN. 'auto' lo lee de la cabecera del archivo")
     parser.add_argument("--color-matrix", default="auto", choices=["auto", "bt601", "bt709"],
@@ -152,6 +160,10 @@ def main() -> None:
         grain=args.grain, grain_strength=args.grain_strength,
         audio_mono=args.mono_audio,
         deflicker=args.deflicker,
+        auto_exposure=args.auto_exposure,
+        auto_exposure_target=args.auto_exposure_target,
+        auto_exposure_strength=args.auto_exposure_strength,
+        auto_exposure_smoothing=args.auto_exposure_smoothing,
         color_range=args.color_range, color_matrix=args.color_matrix,
         source_sar=info.sar,
         fp16=not args.no_fp16,

@@ -52,6 +52,11 @@ class AppConfig:
     # --- Estabilizacion ---
     deflicker: bool = False     # corrige el bombeo de brillo del AGC
     deflicker_window: int = 5   # frames de la media movil
+    # --- Exposicion automatica por escena (dia / noche) ---
+    auto_exposure: bool = False
+    auto_exposure_target: int = 56     # mediana de luma objetivo (0-255)
+    auto_exposure_strength: int = 80   # 0-100
+    auto_exposure_smoothing: int = 30  # frames de la media movil del exponente
     # --- Rendimiento y reanudacion ---
     fp16: bool = True              # variante de media precision del modelo en GPU
     segment_minutes: int = 5       # tamano de cada tramo reanudable (0 = sin trocear)

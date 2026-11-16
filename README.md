@@ -109,6 +109,8 @@ El paso 2 implementa el flujo profesional de calibracion de cintas:
   bajo o danado) mezclando ambos canales en uno central. En CLI: `--mono-audio`.
 - **Estabilizacion de brillo** (opcional): quita el "bombeo" del AGC del
   reproductor. En CLI: `--deflicker`. Ver la seccion dedicada mas abajo.
+- **Exposicion automatica** (opcional): nivela las escenas de dia y de noche
+  corrigiendo la gamma por escena. En CLI: `--auto-exposure`. Ver su seccion.
 
 ## Modo prueba (calibracion obligatoria)
 
@@ -157,6 +159,57 @@ con los **mismos ajustes**, se salta lo que ya estaba hecho.
 
 En CLI: `--jobs` lista lo pendiente, `--no-resume` lo ignora y rehace todo,
 `--segment-seconds 0` desactiva el troceado.
+
+## Exposicion automatica (escenas de dia y de noche)
+
+En una cinta familiar conviven escenas al sol y escenas de interior o de noche,
+y un solo ajuste de brillo no sirve para las dos. La opcion **"Nivelar escenas
+de dia y de noche"** mide cada fotograma y corrige la **gamma** para acercar
+los medios tonos al objetivo.
+
+**Por que gamma y no un auto-levels.** Medido sobre una cinta real de 97 min,
+una escena oscura y una clara dan esto:
+
+| escena | p1 | p25 | mediana | p75 | p99 |
+|---|---|---|---|---|---|
+| oscura (min 73) | 14 | 16 | **28** | 44 | 228 |
+| clara (min 8) | 14 | 23 | **56** | 157 | 230 |
+
+El punto de negro y el de blanco son **identicos**; lo unico que cambia son los
+medios tonos. No hay histograma que estirar, asi que el filtro `normalize` de
+FFmpeg (el "auto brillo" que recomienda todo el mundo) no solo no arregla nada:
+sobre ese mismo fotograma bajo la mediana de 28 a 17, o sea que lo **empeora**.
+
+Como esta hecho:
+
+- La curva actua **solo entre p1 y p99**; fuera de ese tramo el valor se deja
+  tal cual. Recortarlo con un clip aplastaba contra el negro todo lo que
+  cayera por debajo de p1.
+- **Se suaviza el exponente, no el pixel.** Si cada fotograma eligiera su gamma,
+  la imagen latiria.
+- **Se detectan los cortes de plano** para no arrastrar la exposicion de una
+  escena a la siguiente.
+- La correccion es **asimetrica**: aclarar hasta gamma 2.2, oscurecer como
+  mucho un 12 %. Bajar una escena diurna al nivel de una nocturna comprimia las
+  sombras y convertia la ropa oscura del fondo en un borron negro (el p1 caia
+  de 10 a 1). El objetivo funciona practicamente como **suelo**: una escena
+  soleada sigue pareciendo soleada.
+
+Resultado sobre la cinta real, con intensidad al 80 %:
+
+| minuto | mediana | accion |
+|---|---|---|
+| 73 (noche) | 28 -> 48 | aclara +20 |
+| 89 (oscura) | 30 -> 49 | aclara +19 |
+| 8 (correcta) | 56 -> 56 | no la toca |
+| 40 (clara) | 138 -> 130 | apenas -8 |
+| 93 (muy clara) | 205 -> 201 | apenas -4 |
+
+Coste: **0.53 ms por fotograma** (una LUT de 256 entradas). En CLI:
+`--auto-exposure`, con `--auto-exposure-target` (16-160),
+`--auto-exposure-strength` (0-100) y `--auto-exposure-smoothing`.
+
+Se ve en la vista previa, asi que puedes calibrarla sin exportar.
 
 ## Estabilizacion de brillo (deflicker)
 
@@ -326,6 +379,10 @@ REM Analizar la cinta (paridad, overscan, color), aplicar y procesar:
 uv run python -m vhs_upscaler.cli "video.mkv" --analyze --deint qtgmc
 REM Solo analizar, sin tocar nada:
 uv run python -m vhs_upscaler.cli "video.mkv" --analyze-only
+REM Nivelar escenas de dia y de noche:
+uv run python -m vhs_upscaler.cli "video.mkv" --auto-exposure
+REM Mas suave, y apuntando a una imagen algo mas clara:
+uv run python -m vhs_upscaler.cli "video.mkv" --auto-exposure --auto-exposure-strength 60 --auto-exposure-target 65
 REM Estabilizar el brillo y trocear en tramos de 10 min:
 uv run python -m vhs_upscaler.cli "video.mkv" --deflicker --segment-seconds 600
 REM Ver que trabajos quedaron a medias:
