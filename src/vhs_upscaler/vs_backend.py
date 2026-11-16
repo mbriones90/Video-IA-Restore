@@ -27,10 +27,24 @@ from vsdeinterlace import QTempGaussMC
 
 
 def _ezdenoise(clip, tr=1):
-    # EZDenoise clasico: degrain temporal con MVTools (luma + crominancia)
+    # EZDenoise: degrain temporal compensado por movimiento (MVTools).
+    #
+    # Es la limpieza buena para VHS: en vez de promediar pixeles en el mismo
+    # sitio (que arrastra estelas en el movimiento), sigue cada bloque de un
+    # fotograma al siguiente y promedia a lo largo de su trayectoria. El grano
+    # magnetico, que no tiene trayectoria, se cancela; el detalle real se queda.
+    #
+    # Ojo con la API: mv.Analyse NO tiene parametro 'tr'. Hay que pedir un
+    # juego de vectores por cada delta y direccion, y pasarselos todos a
+    # Degrain<N> en el orden exacto (bw1, fw1, bw2, fw2...).
     sup = clip.mv.Super(pel=2, sharp=2)
-    vec = sup.mv.Analyse(tr=tr)
-    return clip.mv.Degrain2(sup, vec, thsad=__THSAD__)
+    bw1 = sup.mv.Analyse(isb=True, delta=1)
+    fw1 = sup.mv.Analyse(isb=False, delta=1)
+    if tr <= 1:
+        return clip.mv.Degrain1(sup, bw1, fw1, thsad=__THSAD__)
+    bw2 = sup.mv.Analyse(isb=True, delta=2)
+    fw2 = sup.mv.Analyse(isb=False, delta=2)
+    return clip.mv.Degrain2(sup, bw1, fw1, bw2, fw2, thsad=__THSAD__)
 
 
 clip = core.ffms2.Source(r"__INPUT__")
@@ -43,13 +57,30 @@ pad_r = (-clip.width) % 4
 pad_b = (-clip.height) % 4
 if pad_r or pad_b:
     clip = core.std.AddBorders(clip, right=pad_r, bottom=pad_b)
-# Paridad: BFF por defecto para NTSC (__TFF__ = True para TFF/PAL)
-clip = QTempGaussMC(
-    denoise_tr=1,
-    denoise_func=__DENOISE__,   # limpieza de grano magnetico de cinta
-    sharpen_strength=0.0,       # nitidez artificial al minimo: sin halos
-    motion_blur_fps_divisor=__DIV__,  # 1 = doble tasa (59.94p), 2 = tasa original
-).deinterlace(clip, tff=__TFF__)
+
+if __QTGMC__:
+    # Paridad: BFF por defecto para NTSC (__TFF__ = True para TFF/PAL)
+    #
+    # denoise_mode es IMPRESCINDIBLE: por defecto QTGMC usa IDENTIFY, que solo
+    # separa el ruido para restaurarlo luego, y con los dos *_noise_restore a
+    # 0 el resultado es que NO limpia nada. Sin esta linea, denoise_func ni
+    # siquiera se llama.
+    clip = QTempGaussMC(
+        denoise_mode=(QTempGaussMC.NoiseProcessMode.DENOISE if __DENOISE_ON__
+                      else QTempGaussMC.NoiseProcessMode.IDENTIFY),
+        denoise_tr=__DENOISE_TR__,
+        denoise_func=_ezdenoise,    # limpieza de grano magnetico de cinta
+        sharpen_strength=0.0,       # nitidez artificial al minimo: sin halos
+        motion_blur_fps_divisor=__DIV__,  # 1 = doble tasa (59.94p), 2 = original
+    ).deinterlace(clip, tff=__TFF__)
+elif __DENOISE_ON__:
+    # Material YA progresivo (la capturadora desentrelazo por hardware, o la
+    # cinta venia asi): se aprovecha SOLO la limpieza de QTGMC, sin volver a
+    # desentrelazar. Pasar material progresivo por QTGMC seria destructivo:
+    # su SeparateFields partiria cada fotograma entero en dos medios cuadros
+    # que nunca fueron campos, y devolveria aliasing vertical inventado.
+    clip = _ezdenoise(clip, tr=__DENOISE_TR__)
+
 # Recorte de overscan / ruido de cabezales (multiples de 2) + retirada del borde
 clip = core.std.CropRel(clip, left=__L__, top=__T__, right=__R__ + pad_r, bottom=__B__ + pad_b)
 
@@ -140,6 +171,45 @@ _RANGE_EXPR = {
 }
 
 
+MVTOOLS_INCOMPATIBLE = (
+    "La limpieza MVTools corre dentro del grafo de VapourSynth, que no tiene "
+    "bwdif ni yadif. Con uno de esos desentrelazados no se pueden combinar: se "
+    "usa hqdn3d. Para MVTools, elige QTGMC como desentrelazado, o desactiva el "
+    "desentrelazado si el material ya viene progresivo."
+)
+
+
+def effective_denoise_method(opts) -> tuple[str, str]:
+    """Metodo de limpieza que se va a usar de verdad, y el aviso si cambio.
+
+    El grafo de VapourSynth sustituye por completo a la cadena de filtros de
+    FFmpeg: si se pidiera el degrain MVTools junto a bwdif, el desentrelazado
+    desapareceria sin avisar. Antes que perderlo en silencio se degrada la
+    limpieza, que es lo menos grave de los dos, y se dice por que.
+    """
+    if not opts.denoise or opts.denoise_method != "mvtools":
+        return opts.denoise_method, ""
+    if opts.deinterlace and opts.deinterlace_method in ("bwdif", "yadif"):
+        return "hqdn3d", MVTOOLS_INCOMPATIBLE
+    return "mvtools", ""
+
+
+def uses_vapoursynth(opts) -> bool:
+    """Si este trabajo necesita el grafo de VapourSynth.
+
+    Dos motivos independientes: desentrelazar con QTGMC, o limpiar con el
+    degrain compensado por movimiento (que tambien sirve, y es lo unico que
+    se puede aprovechar, cuando el material ya viene progresivo).
+    """
+    if opts.deinterlace and opts.deinterlace_method == "qtgmc":
+        return True
+    if not opts.denoise:
+        # Sin limpieza que hacer no hay motivo para arrancar vspipe, aunque el
+        # metodo guardado siga siendo mvtools de una vez anterior.
+        return False
+    return effective_denoise_method(opts)[0] == "mvtools"
+
+
 def write_script(opts, input_path: Path, source_height: int = 480) -> Path:
     """Escribe el grafo .vpy en un archivo temporal y devuelve su ruta."""
     script = VPY_TEMPLATE
@@ -155,7 +225,12 @@ def write_script(opts, input_path: Path, source_height: int = 480) -> Path:
         "__TFF__": "True" if opts.field_parity == "tff" else "False",
         "__DIV__": "1" if opts.qtgmc_double_fps else "2",
         "__THSAD__": str(200 + int(opts.denoise_strength) * 60),
-        "__DENOISE__": "_ezdenoise" if opts.denoise else "lambda clip, tr: clip",
+        "__QTGMC__": "True" if (opts.deinterlace
+                                and opts.deinterlace_method == "qtgmc") else "False",
+        "__DENOISE_ON__": "True" if opts.denoise else "False",
+        # tr 1 o 2 segun la fuerza pedida: tr=2 mira dos fotogramas a cada
+        # lado y limpia mas, a cambio de arrastrar algo mas en el movimiento.
+        "__DENOISE_TR__": "2" if int(opts.denoise_strength) >= 5 else "1",
         "__L__": str(opts.crop_left), "__T__": str(opts.crop_top),
         "__R__": str(opts.crop_right), "__B__": str(opts.crop_bottom),
         "__MATRIX__": _MATRIX_EXPR[matrix],

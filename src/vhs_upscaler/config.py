@@ -34,7 +34,8 @@ class AppConfig:
     chroma_denoise: bool = True  # limpieza de crominancia (sangrado de color VHS)
     qtgmc_double_fps: bool = True  # 29.97i -> 59.94p (doble tasa temporal)
     denoise: bool = True
-    denoise_strength: int = 3  # 0-10, fuerza del filtro hqdn3d
+    denoise_strength: int = 3  # 0-10, fuerza de la reduccion de ruido
+    denoise_method: str = "hqdn3d"  # hqdn3d (FFmpeg) | mvtools (VapourSynth)
     color_correct: bool = False
     brightness: int = 0  # -100 a 100
     contrast: int = 100  # 0 a 200 (100 = sin cambio)

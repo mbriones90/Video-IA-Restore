@@ -110,6 +110,12 @@ def main() -> None:
                         help="Paridad de campos: bff=NTSC tipico, tff=PAL tipico")
     parser.add_argument("--crop", default="0,0,0,0",
                         help="Recorte overscan 'izquierda,arriba,derecha,abajo' en px (multiplos de 2)")
+    parser.add_argument("--denoise-method", default="hqdn3d",
+                        choices=["hqdn3d", "mvtools"],
+                        help="hqdn3d: filtro de FFmpeg, rapido. mvtools: degrain "
+                             "compensado por movimiento (el mismo de QTGMC); sirve "
+                             "tambien con material ya progresivo, pero no se puede "
+                             "combinar con bwdif/yadif")
     parser.add_argument("--no-chroma-denoise", action="store_true",
                         help="Desactiva la limpieza extra de crominancia")
     parser.add_argument("--grain", action="store_true",
@@ -188,6 +194,7 @@ def main() -> None:
         deinterlace_method=args.deint, field_parity=args.parity,
         crop_left=crop_l, crop_top=crop_t, crop_right=crop_r, crop_bottom=crop_b,
         chroma_denoise=not args.no_chroma_denoise,
+        denoise_method=args.denoise_method,
         grain=args.grain, grain_strength=args.grain_strength,
         audio_mono=args.mono_audio,
         deflicker=args.deflicker,

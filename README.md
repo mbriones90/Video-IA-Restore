@@ -434,6 +434,47 @@ Como funciona:
 - ROCm en Windows no es oficial para esta iGPU; si algun dia lo es, se puede
   anadir como grupo igual que los demas.
 
+## Metodo de limpieza: hqdn3d o MVTools
+
+| metodo | que hace | cuando |
+|---|---|---|
+| **hqdn3d** | filtro de FFmpeg: promedia pixeles en el mismo sitio | rapido y suficiente para la mayoria |
+| **MVTools** | degrain compensado por movimiento: sigue cada bloque de un fotograma al siguiente y promedia a lo largo de su trayectoria | mejor en cinta, y lo unico aprovechable de QTGMC con material ya progresivo |
+
+MVTools es la limpieza que QTGMC usa por dentro. El grano magnetico no tiene
+trayectoria, asi que se cancela; el detalle real, que si la tiene, se queda.
+hqdn3d en cambio arrastra estelas detras de lo que se mueve.
+
+### Si tu capturadora desentrelaza por hardware y no se puede desactivar
+
+**No vuelvas a desentrelazar.** QTGMC parte cada fotograma en dos campos con
+SeparateFields; sobre material que ya es progresivo eso trocea medios cuadros
+que nunca fueron campos y devuelve aliasing vertical inventado.
+
+Lo correcto es **desactivar el desentrelazado y poner la limpieza en MVTools**:
+te quedas con la parte buena de QTGMC sin la parte que sobra.
+
+Registro detallado: D:\LOCALDEV\Video_upscaling_portable\output\logshs_upscaler.log
+Dispositivo: cuda | Providers ORT: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider
+Modelos conocidos: realesr-general-x4v3, realesrgan-x4plus, bicubic
+
+En la interfaz: desmarca *Desentrelazar* y elige *MVTools* en **Metodo de
+limpieza**.
+
+### Una combinacion que no se puede
+
+MVTools corre dentro del grafo de VapourSynth, que **sustituye por completo**
+a la cadena de filtros de FFmpeg y no incluye bwdif ni yadif. Pedir
+ dejaria el video sin desentrelazar y sin avisar.
+
+Antes que perder el desentrelazado en silencio, se degrada la limpieza a
+hqdn3d y se dice por que, tanto en el log como junto al control en la
+interfaz. Las combinaciones validas son:
+
+- **QTGMC + MVTools**: lo mejor para material entrelazado.
+- **Sin desentrelazar + MVTools**: para material ya progresivo.
+- **bwdif/yadif + hqdn3d**: la ruta rapida de siempre.
+
 ## QTGMC (VapourSynth) - INSTALADO AUTOMATICAMENTE
 
 El desentrelazado profesional QTGMC (compensado por movimiento, doble tasa

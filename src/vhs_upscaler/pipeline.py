@@ -45,6 +45,7 @@ from .ffmpeg_utils import VideoInfo, get_ffmpeg_exe, probe_video
 from .inference import create_upscaler
 from .logging_setup import get_logger
 from .paths import OUTPUT_DIR, ROOT_DIR
+from .vs_backend import effective_denoise_method
 
 log_file = get_logger(__name__)
 
@@ -123,6 +124,11 @@ class ProcessOptions:
     qtgmc_double_fps: bool = True
     denoise: bool = True
     denoise_strength: int = 3
+    # hqdn3d  = filtro espacial/temporal de FFmpeg: rapido, suficiente.
+    # mvtools = degrain compensado por movimiento (el mismo que usa QTGMC):
+    #           mucho mejor en cinta, y util TAMBIEN con material ya
+    #           progresivo, donde QTGMC entero no se puede usar.
+    denoise_method: str = "hqdn3d"
     color_correct: bool = False
     brightness: int = 0
     contrast: int = 100
@@ -191,7 +197,8 @@ def build_decode_filters(opts: ProcessOptions) -> list[str]:
     if any(getattr(opts, n) for n in ("crop_left", "crop_right", "crop_top", "crop_bottom")):
         l, r, t, b = opts.crop_left, opts.crop_right, opts.crop_top, opts.crop_bottom
         filters.append(f"crop=iw-{l}-{r}:ih-{t}-{b}:{l}:{t}")
-    if opts.denoise and opts.denoise_strength > 0:
+    if (opts.denoise and opts.denoise_strength > 0
+            and effective_denoise_method(opts)[0] != "mvtools"):
         s = float(opts.denoise_strength)
         chroma_tmp = s * 2.0 if opts.chroma_denoise else s * 1.125
         filters.append(f"hqdn3d={s:.2f}:{s * 0.75:.2f}:{chroma_tmp:.2f}:{s * 0.75:.2f}")
@@ -684,6 +691,7 @@ _FINGERPRINT_FIELDS = (
     "brightness", "contrast", "saturation", "deband", "grain", "grain_strength",
     "interpolate_fps", "target_width", "target_height", "start_seconds",
     "max_seconds", "color_range", "color_matrix", "deflicker", "deflicker_window",
+    "denoise_method",
     "source_sar", "auto_exposure", "auto_exposure_target", "auto_exposure_strength",
     "auto_exposure_smoothing",
 )
@@ -759,27 +767,37 @@ class VideoProcessor:
 
         # --- Desentrelazado: ruta QTGMC (VapourSynth) o ruta FFmpeg ---
         use_qtgmc = bool(opts.deinterlace and opts.deinterlace_method == "qtgmc")
-        vspipe = vs_backend.find_vspipe() if use_qtgmc else None
-        if use_qtgmc and vspipe is None:
-            log("QTGMC no disponible (falta VapourSynth en ./runtime o en el PATH). "
-                "Se usa bwdif como respaldo. Instalacion: ver README, seccion QTGMC.")
+        # El grafo tambien se usa SIN desentrelazar, cuando se pide el degrain
+        # compensado por movimiento sobre material ya progresivo.
+        metodo, aviso_denoise = effective_denoise_method(opts)
+        if aviso_denoise:
+            log("Aviso: " + aviso_denoise)
+        use_vs = vs_backend.uses_vapoursynth(opts)
+        vspipe = vs_backend.find_vspipe() if use_vs else None
+        if use_vs and vspipe is None:
+            log("VapourSynth no disponible (ni en ./runtime ni en el PATH). "
+                "Se usan bwdif y hqdn3d como respaldo. Ver README, seccion QTGMC.")
             use_qtgmc = False
+            use_vs = False
 
         script_path: Path | None = None
-        if use_qtgmc:
-            if opts.interpolate_fps:
+        if use_vs:
+            if not use_qtgmc:
+                log("Limpieza MVTools sobre material progresivo (sin desentrelazar).")
+            if opts.interpolate_fps and use_qtgmc:
                 log("Aviso: la interpolacion de fps no aplica con QTGMC "
                     "(ya duplica la tasa temporal a 59.94p). Se omite.")
             if opts.deband:
                 log("Aviso: debanding no disponible en la ruta QTGMC; se omite.")
             script_path = vs_backend.write_script(opts, Path(opts.input_path),
                                                   source_height=info.height)
-            log(f"Grafo VapourSynth: {script_path.name} | QTGMC "
-                f"({'59.94p doble tasa' if opts.qtgmc_double_fps else '29.97p'})")
+            detalle = (f"QTGMC ({'59.94p doble tasa' if opts.qtgmc_double_fps else '29.97p'})"
+                       if use_qtgmc else "solo limpieza MVTools")
+            log(f"Grafo VapourSynth: {script_path.name} | {detalle}")
 
         try:
             return self._run_job(opts, info, cw, ch, ffmpeg, vspipe, script_path,
-                                 use_qtgmc, progress, log, cancel_event, pause)
+                                 use_qtgmc, use_vs, progress, log, cancel_event, pause)
         finally:
             if script_path is not None:
                 script_path.unlink(missing_ok=True)
@@ -787,9 +805,9 @@ class VideoProcessor:
     # -- Orquestacion por segmentos -----------------------------------------
 
     def _run_job(self, opts, info, cw, ch, ffmpeg, vspipe, script_path, use_qtgmc,
-                 progress, log, cancel_event, pause) -> Path:
+                 use_vs, progress, log, cancel_event, pause) -> Path:
         fps_out = output_fps(opts, info, qtgmc=use_qtgmc)
-        if use_qtgmc and script_path is not None:
+        if use_vs and script_path is not None:
             exact = graph_fps(vspipe, script_path)
             if exact and abs(exact - fps_out) > 1e-6:
                 log(f"FPS exacto del grafo VapourSynth: {exact:.5f} "
@@ -819,7 +837,7 @@ class VideoProcessor:
             log(f"Modo prueba: procesando desde el segundo {rango}")
         log(f"Salida: {output.name} | {opts.target_width}x{opts.target_height} | "
             f"{fps_out:.3f} fps | {fmt['video']} | {self._rate_description(opts, fmt)}")
-        if not use_qtgmc:
+        if not use_vs:
             filtros = build_decode_filters(opts)
             if filtros:
                 log(f"Filtros VHS: {', '.join(filtros)}")
@@ -852,7 +870,7 @@ class VideoProcessor:
                 progress(min(base + d, total_frames), total_frames)
 
             produced = self._encode_segment(
-                job, seg, opts, cw, ch, ffmpeg, vspipe, script_path, use_qtgmc,
+                job, seg, opts, cw, ch, ffmpeg, vspipe, script_path, use_vs,
                 fps_out, fmt, upscaler, seg_progress, cancel_event, pause,
             )
             seg.frames = produced
@@ -915,14 +933,14 @@ class VideoProcessor:
     # -- Un segmento ---------------------------------------------------------
 
     def _encode_segment(self, job, seg, opts, cw, ch, ffmpeg, vspipe, script_path,
-                        use_qtgmc, fps_out, fmt, upscaler, progress, cancel_event,
+                        use_vs, fps_out, fmt, upscaler, progress, cancel_event,
                         pause) -> int:
         out_path = job.segment_path(seg)
         tmp_path = out_path.with_suffix(".mkv.part")
         tmp_path.unlink(missing_ok=True)
 
         decode_cmd, decode_is_rgb = self._decode_command(
-            opts, seg, ffmpeg, vspipe, script_path, use_qtgmc, fps_out)
+            opts, seg, ffmpeg, vspipe, script_path, use_vs, fps_out)
         encode_cmd = self._encode_command(
             opts, ffmpeg, fmt, cw * upscaler.scale, ch * upscaler.scale, fps_out, tmp_path)
 
@@ -1074,8 +1092,8 @@ class VideoProcessor:
     # -- Construccion de comandos -------------------------------------------
 
     @staticmethod
-    def _decode_command(opts, seg, ffmpeg, vspipe, script_path, use_qtgmc, fps_out):
-        if use_qtgmc:
+    def _decode_command(opts, seg, ffmpeg, vspipe, script_path, use_vs, fps_out):
+        if use_vs:
             # vspipe: salida raw sin cabecera; --start/--end en frames de SALIDA
             # (con QTGMC doble tasa la salida va al doble de fps).
             cmd = [vspipe]

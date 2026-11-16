@@ -400,6 +400,34 @@ class ConfigPage(QWidget):
         vhs.addWidget(self.denoise_check, 6, 0)
         vhs.addWidget(self._labeled_slider(self.denoise_slider, "suave", "fuerte"), 6, 1)
 
+        self.denoise_method_combo = QComboBox()
+        self.denoise_method_combo.addItem("hqdn3d (rapido, suficiente)", "hqdn3d")
+        self.denoise_method_combo.addItem(
+            "MVTools: degrain compensado por movimiento (mejor en cinta)", "mvtools")
+        self.denoise_method_combo.setCurrentIndex(
+            max(0, self.denoise_method_combo.findData(cfg.denoise_method)))
+        self.denoise_method_combo.setToolTip(
+            "hqdn3d promedia pixeles en el mismo sitio: rapido, pero arrastra "
+            "estelas detras de lo que se mueve.\n\n"
+            "MVTools sigue cada bloque de un fotograma al siguiente y promedia "
+            "a lo largo de su trayectoria: el grano de cinta, que no tiene "
+            "trayectoria, se cancela, y el detalle real se queda. Es la misma "
+            "limpieza que usa QTGMC por dentro.\n\n"
+            "Si tu capturadora ya desentrelaza por hardware y no puedes "
+            "desactivarlo, esta es la forma de aprovechar lo bueno de QTGMC "
+            "sin volver a desentrelazar, que estropearia la imagen."
+        )
+        vhs.addWidget(QLabel("Metodo de limpieza:"), 16, 0)
+        vhs.addWidget(self.denoise_method_combo, 16, 1)
+        self.denoise_method_note = QLabel("")
+        self.denoise_method_note.setWordWrap(True)
+        self.denoise_method_note.setObjectName("muted")
+        vhs.addWidget(self.denoise_method_note, 17, 0, 1, 2)
+        self.deint_check.stateChanged.connect(self._refresh_denoise_method)
+        self.deint_combo.currentIndexChanged.connect(self._refresh_denoise_method)
+        self.denoise_method_combo.currentIndexChanged.connect(
+            self._refresh_denoise_method)
+
         self.chroma_check = QCheckBox("Limpieza de crominancia (sangrado de color VHS)")
         self.chroma_check.setChecked(cfg.chroma_denoise)
         self.chroma_check.setToolTip(
@@ -456,7 +484,7 @@ class ConfigPage(QWidget):
             "escena a la siguiente, y suaviza la correccion entre fotogramas "
             "para que la imagen no lata."
         )
-        vhs.addWidget(self.autoexp_check, 16, 0, 1, 2)
+        vhs.addWidget(self.autoexp_check, 18, 0, 1, 2)
 
         self.autoexp_target = self._make_slider(16, 160, cfg.auto_exposure_target)
         self.autoexp_target.setToolTip(
@@ -464,8 +492,8 @@ class ConfigPage(QWidget):
             "en escenas bien expuestas de una cinta familiar tipica. Subelo si "
             "todo queda oscuro; bajalo si las noches pierden ambiente."
         )
-        vhs.addWidget(QLabel("Brillo objetivo:"), 17, 0)
-        vhs.addWidget(self._labeled_slider(self.autoexp_target, "oscuro", "claro"), 17, 1)
+        vhs.addWidget(QLabel("Brillo objetivo:"), 19, 0)
+        vhs.addWidget(self._labeled_slider(self.autoexp_target, "oscuro", "claro"), 19, 1)
 
         self.autoexp_strength = self._make_slider(0, 100, cfg.auto_exposure_strength)
         self.autoexp_strength.setToolTip(
@@ -473,8 +501,8 @@ class ConfigPage(QWidget):
             "escenas quedan al mismo nivel; por debajo se conserva parte de la "
             "diferencia original entre dia y noche, que suele verse mas natural."
         )
-        vhs.addWidget(QLabel("Intensidad:"), 18, 0)
-        vhs.addWidget(self._labeled_slider(self.autoexp_strength, "sutil", "total"), 18, 1)
+        vhs.addWidget(QLabel("Intensidad:"), 20, 0)
+        vhs.addWidget(self._labeled_slider(self.autoexp_strength, "sutil", "total"), 20, 1)
 
         self.range_combo = QComboBox()
         self.range_combo.addItem("Automatico (leer del archivo)", "auto")
@@ -486,8 +514,8 @@ class ConfigPage(QWidget):
             "negros salen aplastados o lavados y ya no hay vuelta atras. "
             "Dejalo en automatico salvo que el analisis diga otra cosa."
         )
-        vhs.addWidget(QLabel("Rango de color del origen:"), 19, 0)
-        vhs.addWidget(self.range_combo, 19, 1)
+        vhs.addWidget(QLabel("Rango de color del origen:"), 21, 0)
+        vhs.addWidget(self.range_combo, 21, 1)
 
         self.matrix_combo = QComboBox()
         self.matrix_combo.addItem("Automatico (segun la resolucion)", "auto")
@@ -498,8 +526,8 @@ class ConfigPage(QWidget):
             "Matriz de conversion del ORIGEN. Una captura de VHS es SD, es "
             "decir BT.601; usar BT.709 por error tine los colores."
         )
-        vhs.addWidget(QLabel("Matriz de color del origen:"), 20, 0)
-        vhs.addWidget(self.matrix_combo, 20, 1)
+        vhs.addWidget(QLabel("Matriz de color del origen:"), 22, 0)
+        vhs.addWidget(self.matrix_combo, 22, 1)
         layout.addWidget(vhs_box)
 
         # --- Salida ---
@@ -664,6 +692,7 @@ class ConfigPage(QWidget):
         prev_layout.addLayout(pair)
         layout.addWidget(prev_box)
         self._update_model_desc()
+        self._refresh_denoise_method()
         self.refresh_sizes()
 
         # Cualquier cambio manual devuelve el combo de presets a "Personalizado".
@@ -671,6 +700,7 @@ class ConfigPage(QWidget):
             self.model_combo, self.device_combo, self.size_combo, self.fps_combo,
             self.format_combo, self.quality_combo, self.quality_mode_combo,
             self.deint_combo, self.parity_combo, self.range_combo, self.matrix_combo,
+            self.denoise_method_combo,
         ):
             widget.currentIndexChanged.connect(self._mark_custom)
         for widget in (
@@ -742,6 +772,8 @@ class ConfigPage(QWidget):
             self.double_fps_check.setChecked(values.get("qtgmc_double_fps", True))
             self.denoise_check.setChecked(values.get("denoise", True))
             self.denoise_slider.setValue(values.get("denoise_strength", 3))
+            self._set_combo(self.denoise_method_combo,
+                            values.get("denoise_method", "hqdn3d"))
             self.chroma_check.setChecked(values.get("chroma_denoise", True))
             self.color_check.setChecked(values.get("color_correct", False))
             self.deband_check.setChecked(values.get("deband", False))
@@ -816,6 +848,21 @@ class ConfigPage(QWidget):
         d = QFileDialog.getExistingDirectory(self, "Carpeta de salida", self.output_dir_edit.text())
         if d:
             self.output_dir_edit.setText(d)
+
+    def _refresh_denoise_method(self, *_):
+        """Avisa junto al control cuando MVTools no cabe con lo elegido."""
+        from .pipeline import ProcessOptions
+        from .vs_backend import effective_denoise_method
+
+        sonda = ProcessOptions(
+            input_path="", output_path="", denoise=True,
+            denoise_method=self.denoise_method_combo.currentData() or "hqdn3d",
+            deinterlace=self.deint_check.isChecked(),
+            deinterlace_method=self.deint_combo.currentData() or "bwdif",
+        )
+        aviso = effective_denoise_method(sonda)[1]
+        self.denoise_method_note.setText(aviso)
+        self.denoise_method_note.setStyleSheet("color: #e8a33d;" if aviso else "")
 
     # ---------- Analisis automatico ----------
     def _analyze(self):
@@ -1127,6 +1174,7 @@ class MainWindow(QMainWindow):
         cfg.chroma_denoise = cp.chroma_check.isChecked()
         cfg.denoise = cp.denoise_check.isChecked()
         cfg.denoise_strength = cp.denoise_slider.value()
+        cfg.denoise_method = cp.denoise_method_combo.currentData()
         cfg.color_correct = cp.color_check.isChecked()
         cfg.brightness = cp.brightness.value()
         cfg.contrast = cp.contrast.value()
@@ -1158,6 +1206,7 @@ class MainWindow(QMainWindow):
             crop_top=cfg.crop_top, crop_bottom=cfg.crop_bottom,
             chroma_denoise=cfg.chroma_denoise, qtgmc_double_fps=cfg.qtgmc_double_fps,
             denoise=cfg.denoise, denoise_strength=cfg.denoise_strength,
+            denoise_method=cfg.denoise_method,
             color_correct=cfg.color_correct, brightness=cfg.brightness,
             contrast=cfg.contrast, saturation=cfg.saturation,
             deband=cfg.deband, grain=cfg.grain, grain_strength=cfg.grain_strength,
