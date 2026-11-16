@@ -531,51 +531,74 @@ completo va igual de rapido que con H.264. El de CPU comprime un ~12% mejor,
 pero va a 6 fps frente a los 370 de la tarjeta, y es el unico codec que llega a
 frenar el pipeline entero (14.6 -> 11.0 fps medidos de punta a punta).
 
-### Que calidad poner, y por que los numeros no se comparan
+### Que calidad poner
+
+Hay tres perfiles: **Alta**, **Media** y **Rapida**. No hay bitrate manual, y es
+a proposito: una cinta alterna planos quietos con otros muy movidos, asi que un
+bitrate fijo gasta datos de sobra en los primeros y se queda corto justo donde se
+nota. Los perfiles usan calidad constante, que reparte los datos donde hacen
+falta.
+
+**Para una cinta familiar, "Media" con AV1 por GPU es el punto dulce.**
+
+#### Los numeros no se comparan entre codecs
 
 AV1 usa un cuantizador de **0 a 63**, no de 0 a 51 como H.264 y H.265. El "cq 26"
 de AV1 y el "CRF 17" de H.264 son el mismo nivel de calidad; copiar el 17 a AV1
-daria un archivo enorme sin ganar nada. Por eso cada codec tiene su propia tabla
-y la interfaz dice debajo del formato cual es el valor real.
+daria un archivo enorme sin ganar nada. Cada codec tiene su tabla y la interfaz
+dice debajo del formato cual es el valor real y cuanto va a pesar.
 
-Medido sobre 10 s reales de salida del pipeline (captura VHS a 1080p60 escalada
-con `realesr-general-x4v3`), con VMAF contra la exportacion H.264 CRF 17:
+#### Los perfiles se ajustan solos a la resolucion
 
-| Ajuste | Bitrate | VMAF | |
-|---|---|---|---|
-| x264 CRF 17 | 16.9 Mbps | 81.9 | la referencia (nivel "Alta" de siempre) |
-| **av1_nvenc cq 26** | **14.7 Mbps** | **82.1** | nivel "Alta": mejor calidad y 13% menos peso |
-| **av1_nvenc cq 30** | **10.3 Mbps** | **81.3** | nivel "Media": 39% menos peso |
-| x265 CRF 18 | 9.4 Mbps | 79.9 | |
-| **av1_nvenc cq 34** | **7.3 Mbps** | **80.0** | nivel "Rapida": lo mismo que x265 CRF 18 con 22% menos |
-| libaom CRF 16 | 9.5 Mbps | 81.4 | mas eficiente que la tarjeta... |
-| libaom CRF 24 | 6.4 Mbps | 79.9 | ...pero a 6 fps |
+A mas resolucion, cada pixel pesa menos y la imagen aguanta mas compresion sin
+que se note. Asi que el mismo perfil sube el cuantizador al subir de resolucion:
 
-**Para una cinta familiar, "Media" con AV1 por GPU es el punto dulce**: unos
-10 Mbps a 1080p60, practicamente la misma calidad que el H.264 "Alta" de antes y
-con el archivo a poco mas de la mitad.
+| Perfil | 720p | 1080p | 1440p | 4K |
+|---|---|---|---|---|
+| Alta | cq 26 | cq 26 | cq 28 | cq 30 |
+| Media | cq 30 | cq 30 | cq 32 | cq 34 |
+| Rapida | cq 34 | cq 34 | cq 36 | cq 38 |
 
-## Ancho de banda del encode (Mbps)
+Medido sobre 10 s reales del pipeline: **cq 28 a 1440p da la misma calidad que
+cq 26 a 1080p** (VMAF 82.0 frente a 82.1), y a 4K pasar de cq 26 a cq 30 cuesta
+0.4 VMAF y ahorra un 29% de peso. A 720p el ajuste es cero, porque la
+sensibilidad solo crece hacia arriba (cq 26 da VMAF 82.0 a 720p, lo mismo que a
+1080p).
 
-En el paso 2, "Modo de tasa" permite elegir:
-- **CRF (calidad constante):** el tamano final varia segun el contenido.
-  **Es el modo recomendado**, porque una cinta alterna planos quietos con otros
-  muy movidos: un bitrate fijo desperdicia datos en los primeros y se queda
-  corto en los segundos.
-- **Bitrate objetivo en Mbps:** tamano predecible. El pico se limita a 1.5x.
+No es cosa de AV1: con x265, subir 4 puntos de CRF cuesta 2.7 VMAF a 1080p y
+solo 1.7 a 2160p. Es la resolucion, asi que el ajuste se aplica a todos los
+codecs.
 
-Si aun asi quieres fijar el bitrate, orientativo a **30 fps**: 1080p ~ 8-16 Mbps,
-1440p ~ 16-24 Mbps, 4K ~ 32-50 Mbps. **A 60 fps hay que subirlo del orden de
-1.5x** (no el doble: entre fotogramas consecutivos hay mas parecido que
-aprovechar). Con AV1 se puede bajar a la mitad de esas cifras.
+#### Lo que va a pesar
+
+Exportando 10 s reales con el pipeline completo (captura de 640x480 **a 60 fps**
+escalada con `realesr-general-x4v3`), en AV1 por GPU:
+
+| Perfil | 720p | 1080p | 1440p | 4K |
+|---|---|---|---|---|
+| Alta | 9 Mbps | 16 Mbps | 21 Mbps | 31 Mbps |
+| **Media** | **6 Mbps** | **11 Mbps** | **14 Mbps** | **21 Mbps** |
+| Rapida | 4.5 Mbps | 8 Mbps | 10 Mbps | 15 Mbps |
+
+El contenido manda, asi que son orientativos; **a 30 fps salen bastante por
+debajo**. Sin el ajuste por resolucion, "Media" a 4K pesaria 31 Mbps en vez de
+21: un 32% mas por una diferencia que no se ve.
+
+#### Sobre exportar a 4K
+
+Se puede y funciona, pero conviene saber lo que es: una cinta VHS tiene del
+orden de 333x480 lineas utiles de informacion real. A 4K el detalle lo ha
+inventado el modelo, y los datos extra codifican ese invento. 1440p suele ser el
+techo util de verdad; 4K tiene sentido si lo vas a ver en una TV 4K que escala
+mal por su cuenta.
 
 ## Linea de comandos (opcional)
 
 ```bat
 uv run python -m vhs_upscaler.cli "C:\ruta\video.mkv" --device directml
 uv run python -m vhs_upscaler.cli "video.mkv" --model bicubic --device cpu
-uv run python -m vhs_upscaler.cli "video.mkv" --height 2160 --canvas native --bitrate-mbps 40
-uv run python -m vhs_upscaler.cli "video.mkv" --height 1080 --canvas 169 --bitrate-mbps 12
+uv run python -m vhs_upscaler.cli "video.mkv" --height 2160 --canvas native --quality media
+uv run python -m vhs_upscaler.cli "video.mkv" --height 1080 --canvas 169 --quality alta
 REM Maestro de la cinta en AV1 por GPU (el punto dulce):
 uv run python -m vhs_upscaler.cli "video.mkv" --format mkv_av1 --quality media
 REM Prueba rapida con paridad NTSC y recorte de overscan:

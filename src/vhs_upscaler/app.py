@@ -10,7 +10,7 @@ import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QDialog, QFileDialog,
+    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QScrollArea, QSlider, QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
@@ -26,6 +26,7 @@ from .resolutions import build_output_sizes
 from .logging_setup import LOG_PATH, log_to, setup_logging
 from .pipeline import (
     EXPORT_FORMATS, ProcessOptions, ProcessingCancelled, VideoProcessor,
+    quality_value,
     PauseToken, add_grain, build_auto_exposure, extract_filtered_frame,
     find_resumable_jobs, fit_to_canvas,
 )
@@ -598,23 +599,7 @@ class ConfigPage(QWidget):
             "Calidad del archivo final (solo aplica en modo CRF). Alta = mejor "
             "imagen y archivo mas grande."
         )
-        out_form.addRow("Calidad (CRF):", self.quality_combo)
-        self.quality_mode_combo = QComboBox()
-        self.quality_mode_combo.addItem("Calidad constante (CRF): tamano variable", "crf")
-        self.quality_mode_combo.addItem("Bitrate objetivo en Mbps: tamano predecible", "bitrate")
-        self.quality_mode_combo.setCurrentIndex(max(0, self.quality_mode_combo.findData(cfg.quality_mode)))
-        out_form.addRow("Modo de tasa:", self.quality_mode_combo)
-        self.bitrate_spin = QDoubleSpinBox()
-        self.bitrate_spin.setRange(0.5, 200.0)
-        self.bitrate_spin.setSingleStep(1.0)
-        self.bitrate_spin.setDecimals(1)
-        self.bitrate_spin.setSuffix(" Mbps")
-        self.bitrate_spin.setValue(cfg.bitrate_mbps)
-        self.bitrate_spin.setToolTip(
-            "Ancho de banda del video codificado. Referencias: 1080p ~ 8-16 Mbps, "
-            "1440p ~ 16-24 Mbps, 4K ~ 32-50 Mbps. El pico se limita a 1.5x."
-        )
-        out_form.addRow("Bitrate de video:", self.bitrate_spin)
+        out_form.addRow("Calidad:", self.quality_combo)
         self.grain_check = QCheckBox("Grano de pelicula ligero (anti 'oleoso')")
         self.grain_check.setChecked(cfg.grain)
         self.grain_check.setToolTip(
@@ -636,7 +621,6 @@ class ConfigPage(QWidget):
             "canal esta mas bajo o danado. El volumen se mantiene equilibrado."
         )
         out_form.addRow("Audio:", self.mono_check)
-        self.quality_mode_combo.currentIndexChanged.connect(self._toggle_rate_controls)
         self.format_combo.currentIndexChanged.connect(self._toggle_rate_controls)
         self._toggle_rate_controls()
 
@@ -708,14 +692,13 @@ class ConfigPage(QWidget):
         self._refresh_format_note()
         self.format_combo.currentIndexChanged.connect(self._refresh_format_note)
         self.quality_combo.currentIndexChanged.connect(self._refresh_format_note)
-        self.quality_mode_combo.currentIndexChanged.connect(
-            self._refresh_format_note)
+        self.size_combo.currentIndexChanged.connect(self._refresh_format_note)
         self.refresh_sizes()
 
         # Cualquier cambio manual devuelve el combo de presets a "Personalizado".
         for widget in (
             self.model_combo, self.device_combo, self.size_combo, self.fps_combo,
-            self.format_combo, self.quality_combo, self.quality_mode_combo,
+            self.format_combo, self.quality_combo,
             self.deint_combo, self.parity_combo, self.range_combo, self.matrix_combo,
             self.denoise_method_combo,
         ):
@@ -729,7 +712,7 @@ class ConfigPage(QWidget):
             widget.stateChanged.connect(self._mark_custom)
         for widget in (
             self.denoise_slider, self.brightness, self.contrast, self.saturation,
-            self.bitrate_spin, self.grain_slider,
+            self.grain_slider,
             self.autoexp_target, self.autoexp_strength,
         ):
             widget.valueChanged.connect(self._mark_custom)
@@ -751,10 +734,7 @@ class ConfigPage(QWidget):
 
     def _toggle_rate_controls(self):
         fmt = EXPORT_FORMATS.get(self.format_combo.currentData(), EXPORT_FORMATS["mp4_h264"])
-        is_crf = self.quality_mode_combo.currentData() == "crf"
-        self.quality_combo.setEnabled(is_crf and fmt["rate"])
-        self.bitrate_spin.setEnabled(not is_crf and fmt["rate"])
-        self.quality_mode_combo.setEnabled(fmt["rate"])
+        self.quality_combo.setEnabled(fmt["rate"])
 
     @staticmethod
     def _make_slider(lo: int, hi: int, value: int) -> QSlider:
@@ -805,10 +785,10 @@ class ConfigPage(QWidget):
             self.autoexp_strength.setValue(values.get("auto_exposure_strength", 70))
             self.mono_check.setChecked(values.get("audio_mono", False))
             self._set_combo(self.fps_combo, values.get("interpolate_fps", 0))
-            self._set_combo(self.quality_mode_combo, values.get("quality_mode", "crf"))
+
             self._set_combo(self.quality_combo, values.get("quality", "alta"))
             self._set_combo(self.format_combo, values.get("export_format", "mp4_h264"))
-            self.bitrate_spin.setValue(values.get("bitrate_mbps", 16.0))
+
             for i in range(self.size_combo.count()):
                 if self.size_combo.itemData(i).key == values.get("output_size", "1080_169"):
                     self.size_combo.setCurrentIndex(i)
@@ -867,33 +847,70 @@ class ConfigPage(QWidget):
             self.output_dir_edit.setText(d)
 
     def _refresh_format_note(self, *_):
-        """Explica el cuantizador real, que no es comparable entre codecs.
+        """Explica el cuantizador real y el peso que cabe esperar.
 
-        "Alta" son CRF 17 en H.264 y cq 26 en AV1, y los dos dan la misma
-        calidad medida. Sin esta nota, el 26 parece mucho peor que el 17.
+        Dos cosas que confunden si no se dicen: que "Alta" es CRF 17 en H.264
+        y cq 26 en AV1 (el mismo nivel, escalas distintas), y que el numero
+        sube solo al elegir mas resolucion.
         """
-        from .pipeline import CODEC_CRF, EXPORT_FORMATS
+        from .pipeline import CODEC_CRF, EXPORT_FORMATS, quality_value
 
         clave = self.format_combo.currentData() or "mp4_h264"
         fmt = EXPORT_FORMATS.get(clave, EXPORT_FORMATS["mp4_h264"])
         codec = fmt["video"]
         calidad = self.quality_combo.currentData() or "alta"
-        if self.quality_mode_combo.currentData() == "bitrate":
+        size = self.size_combo.currentData()
+        alto = size.height if size else 1080
+        if not fmt["rate"]:
             self.format_note.setText("")
             return
-        q = CODEC_CRF.get(codec, CODEC_CRF["libx264"]).get(calidad, "?")
+
+        q = quality_value(codec, calidad, alto)
+        partes = []
         if codec == "av1_nvenc":
-            texto = (f"AV1 por GPU, cq {q}. Misma calidad medida que CRF "
-                     f"{CODEC_CRF['libx264'][calidad]} en H.264, con un 13% a 39% "
-                     f"menos de peso segun el nivel. La escala de AV1 va de 0 "
-                     f"a 63, asi que su numero no se compara con el de H.264.")
+            partes.append(
+                f"AV1 por GPU, cq {q}: el mismo nivel que CRF "
+                f"{quality_value('libx264', calidad, alto)} en H.264, con un "
+                f"archivo bastante menor. Su escala va de 0 a 63, asi que el "
+                f"numero no se compara con el de H.264.")
         elif codec == "libaom-av1":
-            texto = (f"AV1 por CPU, CRF {q}. Comprime un ~12% mejor que el de "
-                     f"GPU, pero baja el ritmo del proceso completo de unos "
-                     f"15 a unos 11 fps: es el unico codec que estorba.")
+            partes.append(
+                f"AV1 por CPU, CRF {q}. Comprime un ~12% mejor que el de GPU, "
+                f"pero baja el ritmo del proceso completo de unos 15 a unos "
+                f"11 fps: es el unico codec que estorba.")
         else:
-            texto = f"{codec}, CRF {q}."
-        self.format_note.setText(texto)
+            partes.append(f"{codec}, CRF {q}.")
+
+        base = CODEC_CRF.get(codec, CODEC_CRF["libx264"]).get(calidad, q)
+        if q != base:
+            partes.append(
+                f"Subido {int(q) - int(base)} puntos desde {base} porque a "
+                f"{alto}p la imagen aguanta mas compresion sin que se note.")
+
+        esperado = self._expected_mbps(codec, calidad, alto)
+        if esperado:
+            partes.append(f"En material como el tuyo a 60 fps, unos "
+                          f"{esperado:g} Mbps.")
+        self.format_note.setText(" ".join(partes))
+
+    # Bitrate medido exportando 10 s reales con el pipeline completo (captura
+    # VHS de 640x480 a 60 fps, escalada con realesr-general-x4v3), con el
+    # cuantizador de cada perfil ya ajustado a la resolucion. Orientativo: el
+    # contenido manda, y a 30 fps sale bastante por debajo.
+    _MBPS_AV1_GPU = {
+        720: {"alta": 9, "media": 6, "rapida": 4.5},
+        1080: {"alta": 16, "media": 11, "rapida": 8},
+        1440: {"alta": 21, "media": 14, "rapida": 10},
+        2160: {"alta": 31, "media": 21, "rapida": 15},
+    }
+
+    def _expected_mbps(self, codec: str, calidad: str, alto: int):
+        if codec != "av1_nvenc":
+            return None
+        cercano = min(self._MBPS_AV1_GPU, key=lambda h: abs(h - alto))
+        if abs(cercano - alto) > 200:
+            return None
+        return self._MBPS_AV1_GPU[cercano].get(calidad)
 
     def _refresh_denoise_method(self, *_):
         """Avisa junto al control cuando MVTools no cabe con lo elegido."""
@@ -1168,8 +1185,7 @@ class MainWindow(QMainWindow):
         size = self.config_page.size_combo.currentData()
         proporcion = ("proporcion nativa, SIN barras" if size and size.native
                       else "lienzo 16:9, barras negras si aplica (sin estirar)")
-        tasa = (f"{opts.bitrate_mbps:g} Mbps (pico {opts.bitrate_mbps * 1.5:g})"
-                if opts.quality_mode == "bitrate" else f"CRF calidad {opts.quality}")
+        tasa = f"calidad {opts.quality} (constante)"
         metodo = opts.deinterlace_method.upper()
         if opts.deinterlace and metodo in ("BWDIF", "YADIF"):
             metodo += f" (paridad {opts.field_parity})"
@@ -1209,8 +1225,6 @@ class MainWindow(QMainWindow):
         cfg.quality = cp.quality_combo.currentData()
         size = cp.size_combo.currentData()
         cfg.output_size = size.key
-        cfg.quality_mode = cp.quality_mode_combo.currentData()
-        cfg.bitrate_mbps = float(cp.bitrate_spin.value())
         cfg.deinterlace = cp.deint_check.isChecked()
         cfg.deinterlace_method = cp.deint_combo.currentData()
         cfg.field_parity = cp.parity_combo.currentData()
@@ -1259,7 +1273,6 @@ class MainWindow(QMainWindow):
             audio_mono=cfg.audio_mono,
             interpolate_fps=cfg.interpolate_fps,
             target_width=size.width, target_height=size.height,
-            quality_mode=cfg.quality_mode, bitrate_mbps=cfg.bitrate_mbps,
             source_sar=self.video_info.sar if self.video_info else 1.0,
             color_range=cfg.color_range, color_matrix=cfg.color_matrix,
             deflicker=cfg.deflicker, deflicker_window=cfg.deflicker_window,

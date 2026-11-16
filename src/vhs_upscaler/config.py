@@ -22,8 +22,6 @@ class AppConfig:
     export_format: str = "mp4_h264"  # clave de pipeline.EXPORT_FORMATS
     quality: str = "alta"  # alta | media | rapida (modo CRF)
     output_size: str = "1080_169"  # "<altura>_native" | "<altura>_169"
-    quality_mode: str = "crf"  # crf | bitrate
-    bitrate_mbps: float = 16.0  # bitrate objetivo cuando quality_mode = "bitrate"
     deinterlace: bool = True
     deinterlace_method: str = "bwdif"  # bwdif | yadif | qtgmc (requiere VapourSynth)
     field_parity: str = "auto"  # auto | bff (NTSC tipico) | tff (PAL tipico)

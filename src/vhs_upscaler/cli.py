@@ -100,8 +100,6 @@ def main() -> None:
                         help="Altura de salida (2160 = 4K)")
     parser.add_argument("--canvas", default="169", choices=["169", "native"],
                         help="169: lienzo 16:9 con barras si aplica; native: proporcion original sin barras")
-    parser.add_argument("--bitrate-mbps", type=float, default=0.0,
-                        help="Si es mayor que 0, codifica con bitrate objetivo en Mbps en vez de CRF")
     parser.add_argument("--no-deinterlace", action="store_true")
     parser.add_argument("--no-denoise", action="store_true")
     parser.add_argument("--interpolate", type=int, default=0, choices=[0, 50, 60])
@@ -232,8 +230,6 @@ def main() -> None:
                 if s.key == key)
     print(f"Resolucion de salida: {size.label}")
     opts.target_width, opts.target_height = size.width, size.height
-    opts.quality_mode = "bitrate" if args.bitrate_mbps > 0 else "crf"
-    opts.bitrate_mbps = args.bitrate_mbps if args.bitrate_mbps > 0 else 16.0
 
     suffix = "_prueba" if args.test else ""
     ext = EXPORT_FORMATS[args.format]["ext"]

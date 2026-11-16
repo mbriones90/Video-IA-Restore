@@ -20,7 +20,7 @@ import pytest
 from vhs_upscaler import pipeline as pipeline_mod
 from vhs_upscaler.pipeline import (
     CODEC_CRF, EXPORT_FORMATS, ProcessOptions, VideoProcessor,
-    resolve_export_format,
+    quality_value, resolve_export_format,
 )
 
 
@@ -92,12 +92,97 @@ def test_la_gpu_pide_vbr_y_bitrate_cero():
     assert args[args.index("-b:v") + 1] == "0"
 
 
-def test_en_modo_bitrate_la_gpu_tambien_pide_vbr():
-    """Sin -rc vbr, NVENC ignora maxrate y bufsize."""
-    args = tras_codec(comando("mp4_av1", quality_mode="bitrate", bitrate_mbps=12.0))
-    assert args[args.index("-rc") + 1] == "vbr"
-    assert "-maxrate" in args and "-bufsize" in args
-    assert "-cq" not in args
+def test_ya_no_se_puede_fijar_el_bitrate():
+    """Un bitrate fijo no encaja con una cinta: solo quedan los perfiles."""
+    import dataclasses
+
+    campos = {f.name for f in dataclasses.fields(ProcessOptions)}
+    assert "bitrate_mbps" not in campos
+    assert "quality_mode" not in campos
+    args = tras_codec(comando("mp4_av1"))
+    assert "-maxrate" not in args and "-bufsize" not in args
+
+
+# ------------------------------------------- ajuste por resolucion --------
+#
+# Medido sobre 10 s reales del pipeline: el cuantizador que mantiene la misma
+# calidad sube con la resolucion, porque a mas pixeles cada uno pesa menos.
+#   720p  cq 26 -> VMAF 82.0      1080p cq 26 -> VMAF 82.1  (base)
+#   1440p cq 28 -> VMAF 82.0      2160p cq 30 -> 28.9 Mbps frente a 40.5 con cq 26
+
+
+def test_el_perfil_sube_el_cuantizador_al_subir_la_resolucion():
+    valores = [int(quality_value("av1_nvenc", "alta", h))
+               for h in (720, 1080, 1440, 2160)]
+    assert valores == [26, 26, 28, 30]
+
+
+def test_a_720p_no_se_ajusta_nada():
+    """La sensibilidad solo crece hacia arriba: a 720p cq 26 da el mismo VMAF."""
+    assert quality_value("av1_nvenc", "media", 720) == \
+        quality_value("av1_nvenc", "media", 1080)
+
+
+def test_el_ajuste_se_aplica_a_todos_los_codecs():
+    """El efecto es de la resolucion, no del codec (x265 lo confirma)."""
+    for codec in ("libx264", "libx265", "av1_nvenc", "libaom-av1"):
+        a = int(quality_value(codec, "alta", 1080))
+        b = int(quality_value(codec, "alta", 2160))
+        assert b == a + 4, codec
+
+
+def test_los_tres_perfiles_se_mantienen_separados_en_4k():
+    valores = [int(quality_value("av1_nvenc", q, 2160))
+               for q in ("alta", "media", "rapida")]
+    assert valores == sorted(valores) and len(set(valores)) == 3
+
+
+def test_el_cuantizador_no_se_sale_del_rango_del_codec():
+    """H.264 y H.265 llegan a 51; AV1 y VP9, a 63."""
+    assert int(quality_value("libx264", "rapida", 9999)) <= 51
+    assert int(quality_value("libaom-av1", "rapida", 9999)) <= 63
+    assert int(quality_value("av1_nvenc", "alta", 0)) >= 0
+
+
+def test_el_comando_lleva_el_cuantizador_de_la_resolucion():
+    """A 4K debe ir el valor ajustado, no el de 1080p."""
+    args = tras_codec(comando("mp4_av1", target_width=3840, target_height=2160))
+    assert args[args.index("-cq") + 1] == "30"
+
+
+def test_manda_el_lienzo_final_y_no_la_salida_del_modelo():
+    """El bug que esto fija.
+
+    _encode_command recibe el tamano que entrega el modelo (ch * scale), que
+    con una captura de 480 lineas y un modelo x4 son 1920 tanto si exportas a
+    1080p como a 4K. Si el ajuste mira ese numero, elegir 4K no cambia nada y
+    exportar a 1080p sale apretado de mas.
+    """
+    import pathlib
+
+    def cq(target_h, modelo_h):
+        cmd = VideoProcessor._encode_command(
+            opts(export_format="mp4_av1", target_width=1920,
+                 target_height=target_h),
+            "ffmpeg", EXPORT_FORMATS["mp4_av1"], 2560, modelo_h, 60.0,
+            pathlib.Path("seg.mkv.part"))
+        args = tras_codec(cmd)
+        return args[args.index("-cq") + 1]
+
+    # Misma salida del modelo (1920), lienzos distintos -> cuantizadores
+    # distintos.
+    assert cq(1080, 1920) == "26"   # perfil "alta" a 1080p
+    assert cq(2160, 1920) == "30"   # el mismo perfil a 4K, +4
+    # Mismo lienzo, salidas del modelo distintas -> el mismo cuantizador.
+    assert cq(1080, 1920) == cq(1080, 2880)
+
+
+def test_el_log_dice_cuando_ajusto_por_resolucion():
+    desc = VideoProcessor._rate_description
+    en1080 = desc(opts(quality="alta"), EXPORT_FORMATS["mp4_av1"], 1080)
+    en4k = desc(opts(quality="alta"), EXPORT_FORMATS["mp4_av1"], 2160)
+    assert "cq 26" in en1080 and "ajustado" not in en1080
+    assert "cq 30" in en4k and "2160p" in en4k
 
 
 def test_av1_por_cpu_usa_crf_con_bitrate_cero():
@@ -164,9 +249,9 @@ def test_el_formato_entra_en_la_huella_del_trabajo():
 
 def test_el_log_dice_cq_con_la_gpu_y_crf_con_el_resto():
     desc = VideoProcessor._rate_description
-    assert desc(opts(quality="alta"), EXPORT_FORMATS["mp4_av1"]) == "cq 26 (calidad constante)"
-    assert desc(opts(quality="alta"), EXPORT_FORMATS["mp4_h264"]) == "CRF 17 (calidad constante)"
-    assert desc(opts(quality="alta"), EXPORT_FORMATS["mp4_av1_cpu"]) == "CRF 16 (calidad constante)"
+    assert "cq 26" in desc(opts(quality="alta"), EXPORT_FORMATS["mp4_av1"], 1080)
+    assert "CRF 17" in desc(opts(quality="alta"), EXPORT_FORMATS["mp4_h264"], 1080)
+    assert "CRF 16" in desc(opts(quality="alta"), EXPORT_FORMATS["mp4_av1_cpu"], 1080)
 
 
 # ------------------------------------------------- de verdad --------------
