@@ -18,10 +18,41 @@ from .models import BICUBIC_ID, load_manifest
 from .paths import OUTPUT_DIR
 from .logging_setup import log_to, setup_logging
 from .pipeline import (
-    EXPORT_FORMATS, ProcessOptions, ProcessingCancelled, VideoProcessor,
-    find_resumable_jobs,
+    EXPORT_FORMATS, PauseToken, ProcessOptions, ProcessingCancelled,
+    VideoProcessor, find_resumable_jobs,
 )
 from .resolutions import build_output_sizes
+
+
+def watch_pause_key(pause: PauseToken, stop: threading.Event) -> threading.Thread | None:
+    """Hilo que escucha la tecla P para pausar y reanudar.
+
+    Solo tiene sentido con una consola de verdad: si la salida esta
+    redirigida a un archivo o corre en segundo plano, no hay teclado que leer
+    y se devuelve None sin molestar.
+    """
+    try:
+        import msvcrt
+    except ImportError:
+        return None
+    if not sys.stdin.isatty():
+        return None
+
+    def escuchar() -> None:
+        while not stop.wait(0.15):
+            if not msvcrt.kbhit():
+                continue
+            tecla = msvcrt.getch()
+            if tecla.lower() not in (b"p",):
+                continue
+            if pause.toggle():
+                print("\n[PAUSA] Pulsa P otra vez para reanudar.", flush=True)
+            else:
+                print("\n[REANUDADO]", flush=True)
+
+    hilo = threading.Thread(target=escuchar, daemon=True)
+    hilo.start()
+    return hilo
 
 
 def apply_analysis(opts: ProcessOptions, result) -> None:
@@ -197,20 +228,30 @@ def main() -> None:
     output = args.output or str(OUTPUT_DIR / f"{Path(args.input).stem}{suffix}_{size.width}x{size.height}.{ext}")
     opts.output_path = output
 
+    pause = PauseToken()
+
     def progress(done: int, total: int) -> None:
+        if pause.is_paused:
+            return
         pct = done * 100 // max(total, 1)
         sys.stdout.write(f"\rProgreso: {done}/{total} frames ({pct}%)   ")
         sys.stdout.flush()
 
+    parar_teclado = threading.Event()
+    if watch_pause_key(pause, parar_teclado) is not None:
+        print("Pulsa P en cualquier momento para pausar o reanudar.")
+
     try:
         VideoProcessor().run(opts, progress=progress, log=log_to(print, "cli"),
-                             cancel_event=threading.Event())
+                             cancel_event=threading.Event(), pause=pause)
         print()
     except ProcessingCancelled:
         print("\nProcesamiento cancelado.")
     except Exception as exc:
         print(f"\nError: {exc}")
         sys.exit(1)
+    finally:
+        parar_teclado.set()
 
 
 if __name__ == "__main__":

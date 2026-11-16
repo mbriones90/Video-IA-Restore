@@ -517,6 +517,74 @@ def _unlink_retry(path: Path, attempts: int = 10) -> None:
     log_file.warning("No se pudo borrar el temporal %s", path)
 
 
+class PauseToken:
+    """Permite pausar y reanudar el procesamiento sin perder nada de lo hecho.
+
+    Por dentro es un Event que esta PUESTO mientras se trabaja; pausar lo
+    limpia y el hilo de escalado se queda esperando. Como las colas del
+    pipeline son acotadas, parar ese hilo frena solos al decodificador y al
+    codificador: se llenan sus colas, se bloquean escribiendo en la tuberia y
+    ahi se quedan, vivos y sin gastar CPU. No hay nada que guardar ni que
+    rehacer al reanudar, y los subprocesos no se enteran.
+
+    Es distinto de cancelar: cancelar tira el segmento a medias (aunque
+    conserva los tramos ya terminados, ver `Job`), mientras que pausar deja
+    todo exactamente donde estaba.
+
+    Ademas lleva la cuenta del tiempo detenido, porque si no la velocidad y el
+    tiempo restante que ve el usuario saldrian absurdos tras una pausa larga.
+    """
+
+    def __init__(self) -> None:
+        self._running = threading.Event()
+        self._running.set()
+        self._paused_at: float | None = None
+        self._accumulated = 0.0
+        self._lock = threading.Lock()
+
+    # -- control --------------------------------------------------------
+    def pause(self) -> None:
+        with self._lock:
+            if self._paused_at is None:
+                self._paused_at = time.monotonic()
+            self._running.clear()
+
+    def resume(self) -> None:
+        with self._lock:
+            if self._paused_at is not None:
+                self._accumulated += time.monotonic() - self._paused_at
+                self._paused_at = None
+            self._running.set()
+
+    def toggle(self) -> bool:
+        """Cambia de estado y devuelve True si queda en pausa."""
+        if self.is_paused:
+            self.resume()
+            return False
+        self.pause()
+        return True
+
+    @property
+    def is_paused(self) -> bool:
+        return not self._running.is_set()
+
+    @property
+    def paused_seconds(self) -> float:
+        """Total detenido, incluida la pausa en curso."""
+        with self._lock:
+            extra = (time.monotonic() - self._paused_at) if self._paused_at else 0.0
+            return self._accumulated + extra
+
+    # -- uso desde el pipeline -------------------------------------------
+    def wait(self, cancel_event: threading.Event | None = None) -> None:
+        """Bloquea mientras este pausado. Cancelar durante la pausa funciona."""
+        if self._running.is_set():
+            return  # camino rapido: ni una llamada de mas por fotograma
+        while not self._running.wait(0.2):
+            if cancel_event is not None and cancel_event.is_set():
+                raise ProcessingCancelled()
+
+
 def run_ffmpeg(args: list[str], what: str) -> None:
     """Corre FFmpeg y lanza un RuntimeError legible si falla."""
     proc = subprocess.run(args, capture_output=True, creationflags=_flags(), env=process_env())
@@ -676,10 +744,12 @@ class VideoProcessor:
     """Escala un video completo, por segmentos y con las etapas solapadas."""
 
     def run(self, opts: ProcessOptions, progress=None, log=print,
-            cancel_event: threading.Event | None = None) -> Path:
+            cancel_event: threading.Event | None = None,
+            pause: "PauseToken | None" = None) -> Path:
         from . import vs_backend
 
         cancel_event = cancel_event or threading.Event()
+        pause = pause or PauseToken()
         progress = progress or (lambda done, total: None)
 
         ffmpeg = get_ffmpeg_exe()
@@ -709,7 +779,7 @@ class VideoProcessor:
 
         try:
             return self._run_job(opts, info, cw, ch, ffmpeg, vspipe, script_path,
-                                 use_qtgmc, progress, log, cancel_event)
+                                 use_qtgmc, progress, log, cancel_event, pause)
         finally:
             if script_path is not None:
                 script_path.unlink(missing_ok=True)
@@ -717,7 +787,7 @@ class VideoProcessor:
     # -- Orquestacion por segmentos -----------------------------------------
 
     def _run_job(self, opts, info, cw, ch, ffmpeg, vspipe, script_path, use_qtgmc,
-                 progress, log, cancel_event) -> Path:
+                 progress, log, cancel_event, pause) -> Path:
         fps_out = output_fps(opts, info, qtgmc=use_qtgmc)
         if use_qtgmc and script_path is not None:
             exact = graph_fps(vspipe, script_path)
@@ -783,7 +853,7 @@ class VideoProcessor:
 
             produced = self._encode_segment(
                 job, seg, opts, cw, ch, ffmpeg, vspipe, script_path, use_qtgmc,
-                fps_out, fmt, upscaler, seg_progress, cancel_event,
+                fps_out, fmt, upscaler, seg_progress, cancel_event, pause,
             )
             seg.frames = produced
             seg.done = True
@@ -795,9 +865,11 @@ class VideoProcessor:
         log("Uniendo segmentos y agregando el audio original...")
         final = self._finalize(job, opts, fmt, output)
 
-        elapsed = max(time.monotonic() - started, 1e-6)
-        log(f"Completado: {done_frames} frames en {elapsed / 60:.1f} min "
-            f"({done_frames / elapsed:.1f} fps) -> {final}")
+        detenido = pause.paused_seconds
+        elapsed = max(time.monotonic() - started - detenido, 1e-6)
+        extra = f" (+{detenido / 60:.1f} min en pausa)" if detenido > 1.0 else ""
+        log(f"Completado: {done_frames} frames en {elapsed / 60:.1f} min"
+            f"{extra} ({done_frames / elapsed:.1f} fps) -> {final}")
         cleanup_job(job)
         progress(total_frames, total_frames)
         return final
@@ -843,7 +915,8 @@ class VideoProcessor:
     # -- Un segmento ---------------------------------------------------------
 
     def _encode_segment(self, job, seg, opts, cw, ch, ffmpeg, vspipe, script_path,
-                        use_qtgmc, fps_out, fmt, upscaler, progress, cancel_event) -> int:
+                        use_qtgmc, fps_out, fmt, upscaler, progress, cancel_event,
+                        pause) -> int:
         out_path = job.segment_path(seg)
         tmp_path = out_path.with_suffix(".mkv.part")
         tmp_path.unlink(missing_ok=True)
@@ -870,7 +943,7 @@ class VideoProcessor:
         fallo: BaseException | None = None
         try:
             done = self._pump(decoder, encoder, opts, cw, ch, decode_is_rgb,
-                              upscaler, seg.frames, progress, cancel_event)
+                              upscaler, seg.frames, progress, cancel_event, pause)
         except OSError as exc:
             # Si el codificador muere al arrancar, Windows devuelve EINVAL al
             # escribir en su stdin en vez de EPIPE: en ambos casos lo util es
@@ -913,7 +986,7 @@ class VideoProcessor:
         return done
 
     def _pump(self, decoder, encoder, opts, cw, ch, decode_is_rgb,
-              upscaler, expected, progress, cancel_event) -> int:
+              upscaler, expected, progress, cancel_event, pause) -> int:
         """Las tres etapas a la vez: leer / escalar / escribir.
 
         Colas cortas a proposito: cada frame escalado ocupa ~17 MB a 1080p, asi
@@ -968,6 +1041,11 @@ class VideoProcessor:
         done = 0
         try:
             while True:
+                # Un solo punto de pausa, y aqui: parar el hilo que escala
+                # frena por si solo al decodificador y al codificador, porque
+                # las colas son acotadas. Pausar en tres sitios distintos solo
+                # abriria carreras.
+                pause.wait(cancel_event)
                 if cancel_event.is_set():
                     raise ProcessingCancelled()
                 if errors:

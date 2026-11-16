@@ -13,7 +13,8 @@ import threading
 import pytest
 
 from vhs_upscaler.pipeline import (
-    ProcessingCancelled, ProcessOptions, VideoProcessor, find_resumable_jobs,
+    PauseToken, ProcessingCancelled, ProcessOptions, VideoProcessor,
+    find_resumable_jobs,
 )
 
 pytestmark = pytest.mark.slow
@@ -149,6 +150,70 @@ def test_el_deflicker_no_rompe_la_exportacion(sample_video, tmp_path, ffmpeg, jo
         log=lambda *_: None)
     frames, _ = contar_frames(ffmpeg, out)
     assert frames == pytest.approx(60, abs=2)
+
+
+def test_pausar_y_reanudar_no_altera_el_resultado(sample_video, tmp_path, ffmpeg,
+                                                  jobs_dir):
+    """Pausar no es cancelar: el video tiene que salir identico."""
+    import threading
+    import time
+
+    referencia = VideoProcessor().run(
+        base_opts(sample_video, tmp_path, output_path=str(tmp_path / "ref.mp4"),
+                  segment_seconds=0),
+        log=lambda *_: None)
+    frames_ref, dur_ref = contar_frames(ffmpeg, referencia)
+
+    pause = PauseToken()
+    pausado_en: list[int] = []
+
+    def progress(done, _total):
+        # Pausar a mitad, desde otro hilo (como hace el boton de la interfaz).
+        if done == 25 and not pausado_en:
+            pausado_en.append(done)
+            pause.pause()
+            threading.Timer(0.6, pause.resume).start()
+
+    salida = VideoProcessor().run(
+        base_opts(sample_video, tmp_path, output_path=str(tmp_path / "pausado.mp4"),
+                  segment_seconds=0),
+        progress=progress, log=lambda *_: None, pause=pause)
+
+    assert pausado_en, "la prueba no llego a pausar"
+    frames, dur = contar_frames(ffmpeg, salida)
+    assert frames == frames_ref, "pausar perdio o duplico fotogramas"
+    assert dur == pytest.approx(dur_ref, abs=0.05)
+    assert pause.paused_seconds >= 0.4
+    assert tiene_audio(ffmpeg, salida)
+
+
+def test_pausar_detiene_de_verdad_el_avance(sample_video, tmp_path, ffmpeg, jobs_dir):
+    import threading
+    import time
+
+    pause = PauseToken()
+    avance: list[int] = []
+    pause.pause()   # arranca pausado
+
+    def progress(done, _total):
+        avance.append(done)
+
+    resultado: list = []
+
+    def correr():
+        resultado.append(VideoProcessor().run(
+            base_opts(sample_video, tmp_path, segment_seconds=0),
+            progress=progress, log=lambda *_: None, pause=pause))
+
+    hilo = threading.Thread(target=correr, daemon=True)
+    hilo.start()
+    time.sleep(2.0)
+    quietos = len(avance)
+    assert quietos <= 1, f"avanzo {quietos} fotogramas estando en pausa"
+    pause.resume()
+    hilo.join(timeout=120)
+    assert resultado, "no termino tras reanudar"
+    assert len(avance) > quietos
 
 
 def test_la_salida_queda_etiquetada_como_bt709(sample_video, tmp_path, ffmpeg, jobs_dir):

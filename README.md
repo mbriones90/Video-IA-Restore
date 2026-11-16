@@ -138,6 +138,37 @@ escena oscura pareciera borde negro.
 
 En CLI: `--analyze` (analiza, aplica y procesa) o `--analyze-only` (solo informa).
 
+## Pausar y reanudar
+
+El boton **Pausar** del paso 3 detiene el proceso donde esta, sin perder nada:
+al reanudar sigue por el mismo fotograma. Util para soltar la GPU un rato
+(jugar, editar video, otra cosa pesada) sin tirar horas de trabajo.
+
+Funciona asi: el hilo que escala se queda esperando, y como las colas del
+pipeline son **acotadas**, el decodificador y el codificador se frenan solos
+(llenan su cola, se bloquean escribiendo en la tuberia y ahi se quedan, vivos
+y sin gastar CPU). No hay nada que guardar ni que rehacer, y los subprocesos
+ni se enteran. Por eso la pausa esta en **un solo punto** del pipeline:
+pausar en tres sitios distintos solo abriria carreras.
+
+No confundir con cancelar: cancelar tira el tramo a medias (conservando los ya
+terminados, ver la seccion siguiente); pausar deja todo exactamente donde
+estaba.
+
+El tiempo detenido **no cuenta** para la velocidad ni para el tiempo restante,
+y se informa aparte al terminar:
+
+```
+Completado: 600 frames en 0.5 min (+0.1 min en pausa) (22.2 fps)
+```
+
+En la CLI, con una consola de verdad, se pausa y reanuda con la tecla **P**
+(si la salida esta redirigida a un archivo no hay teclado que leer y la opcion
+se desactiva sola, sin molestar).
+
+Cerrar la app estando en pausa funciona: se reanuda primero para que el hilo
+pueda terminar, en vez de esperar al tiempo limite y matarlo.
+
 ## Reanudar un trabajo cortado
 
 Una cinta de 2 h tarda horas. Si el proceso se corta al 80 % (apagon,
@@ -399,6 +430,7 @@ REM Mas suave, y apuntando a una imagen algo mas clara:
 uv run python -m vhs_upscaler.cli "video.mkv" --auto-exposure --auto-exposure-strength 60 --auto-exposure-target 65
 REM Estabilizar el brillo y trocear en tramos de 10 min:
 uv run python -m vhs_upscaler.cli "video.mkv" --deflicker --segment-seconds 600
+REM Durante el proceso, pulsa P para pausar o reanudar.
 REM Ver que trabajos quedaron a medias:
 uv run python -m vhs_upscaler.cli "video.mkv" --jobs
 ```

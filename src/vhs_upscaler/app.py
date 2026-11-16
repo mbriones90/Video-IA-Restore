@@ -26,8 +26,8 @@ from .resolutions import build_output_sizes
 from .logging_setup import LOG_PATH, log_to, setup_logging
 from .pipeline import (
     EXPORT_FORMATS, ProcessOptions, ProcessingCancelled, VideoProcessor,
-    add_grain, build_auto_exposure, extract_filtered_frame, find_resumable_jobs,
-    fit_to_canvas,
+    PauseToken, add_grain, build_auto_exposure, extract_filtered_frame,
+    find_resumable_jobs, fit_to_canvas,
 )
 from .vs_backend import qtgmc_available
 
@@ -75,6 +75,7 @@ class ProcessWorker(QThread):
         super().__init__()
         self.opts = opts
         self.cancel_event = threading.Event()
+        self.pause = PauseToken()
 
     def run(self):
         try:
@@ -85,6 +86,7 @@ class ProcessWorker(QThread):
                 # de 3 h falla al final, el cuadro de texto ya no lo tiene todo.
                 log=log_to(self.logged.emit, "proceso"),
                 cancel_event=self.cancel_event,
+                pause=self.pause,
             )
             self.succeeded.emit(str(out))
         except ProcessingCancelled:
@@ -949,6 +951,18 @@ class ExportPage(QWidget):
         layout.addWidget(self.log, 1)
 
         row = QHBoxLayout()
+        self.pause_btn = QPushButton("Pausar")
+        self.pause_btn.setObjectName("secondary")
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.clicked.connect(self.window.toggle_pause)
+        self.pause_btn.setToolTip(
+            "Detiene el proceso donde esta, sin perder nada. El decodificador "
+            "y el codificador se quedan esperando: al reanudar sigue por el "
+            "mismo fotograma.\n\n"
+            "Util para liberar la GPU un rato (jugar, editar video) sin tirar "
+            "horas de trabajo. El tiempo en pausa no cuenta para la velocidad "
+            "ni para el tiempo restante."
+        )
         self.cancel_btn = QPushButton("Cancelar")
         self.cancel_btn.setObjectName("danger")
         self.cancel_btn.setEnabled(False)
@@ -957,6 +971,7 @@ class ExportPage(QWidget):
         self.open_btn.setObjectName("secondary")
         self.open_btn.setEnabled(False)
         self.open_btn.clicked.connect(self._open_output)
+        row.addWidget(self.pause_btn)
         row.addWidget(self.cancel_btn)
         row.addStretch(1)
         row.addWidget(self.open_btn)
@@ -1208,8 +1223,25 @@ class MainWindow(QMainWindow):
         ep.start_btn.setEnabled(not busy)
         ep.test_btn.setEnabled(not busy)
         ep.cancel_btn.setEnabled(busy)
+        ep.pause_btn.setEnabled(busy)
+        if not busy:
+            ep.pause_btn.setText("Pausar")
         ep.open_btn.setEnabled(False)
         self.back_btn.setEnabled(not busy)
+
+    def toggle_pause(self):
+        if self.worker is None:
+            return
+        pausado = self.worker.pause.toggle()
+        self.export_page.pause_btn.setText("Reanudar" if pausado else "Pausar")
+        if pausado:
+            self.export_page.status.setText(
+                "EN PAUSA - el trabajo esta guardado donde estaba. "
+                "Pulsa 'Reanudar' para seguir.")
+            self.append_log("Procesamiento en pausa.")
+        else:
+            self.append_log(
+                f"Reanudado tras {self._hms(self.worker.pause.paused_seconds)} en pausa.")
 
     def cancel_processing(self):
         if self.worker:
@@ -1227,7 +1259,12 @@ class MainWindow(QMainWindow):
     def _on_progress(self, done: int, total: int):
         pct = int(done * 100 / max(total, 1))
         self.export_page.progress.setValue(pct)
-        elapsed = time.monotonic() - self._started_at
+        if self.worker is not None and self.worker.pause.is_paused:
+            return  # en pausa no se refresca el texto: lo puso toggle_pause
+        # El tiempo detenido no cuenta: si no, tras una pausa de media hora la
+        # velocidad y el tiempo restante saldrian absurdos.
+        detenido = self.worker.pause.paused_seconds if self.worker else 0.0
+        elapsed = time.monotonic() - self._started_at - detenido
         partes = [f"{done}/{total} frames ({pct}%)"]
         if done > 0 and elapsed > 1.0:
             # La velocidad se mide sobre los frames de ESTA ejecucion: al
@@ -1238,6 +1275,8 @@ class MainWindow(QMainWindow):
             partes.append(f"transcurrido {self._hms(elapsed)}")
             if fps > 0:
                 partes.append(f"faltan {self._hms(max(total - done, 0) / fps)}")
+        if detenido > 1.0:
+            partes.append(f"{self._hms(detenido)} en pausa")
         self.export_page.status.setText("  |  ".join(partes))
 
     def release_analysis_worker(self):
@@ -1295,6 +1334,10 @@ class MainWindow(QMainWindow):
         for w in (*activos, self.preview_worker, self.analysis_worker):
             if w is not None:
                 w.cancel_event.set()
+        # Un worker en pausa esta bloqueado esperando: hay que soltarlo o el
+        # wait() de abajo agotaria los 15 s y acabaria en terminate().
+        if self.worker is not None:
+            self.worker.pause.resume()
         for w in (*activos, self.preview_worker, self.analysis_worker):
             if w is not None and not w.wait(15000):
                 w.terminate()  # ultimo recurso: el proceso se cierra de inmediato
