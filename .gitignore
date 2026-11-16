@@ -1,0 +1,27 @@
+# Entorno (lo recrea sync.bat desde uv.lock)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Modelos: se descargan con sync.bat y se verifican por SHA-256.
+# Los .fp16.onnx los genera model_opt.py sola la primera vez.
+models/*.onnx
+models/*.part
+
+# Material del usuario y resultados
+VIDEOS/
+output/
+*.ffindex
+
+# Preferencias de esta PC
+config/config.local.json
+config/backend.txt
+
+# Plugins descargados de QTGMC
+runtime/cache/
+runtime/bin/
+
+# Editores
+.idea/
+.vscode/

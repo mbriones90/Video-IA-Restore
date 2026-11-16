@@ -1,0 +1,30 @@
+{
+  "models": [
+    {
+      "id": "realesr-general-x4v3",
+      "name": "Real-ESRGAN General x4v3 (recomendado para VHS)",
+      "file": "realesr-general-x4v3.onnx",
+      "url": "https://huggingface.co/CoderViking/realesr-general-x4v3-onnx/resolve/main/realesr-general-x4v3.onnx",
+      "sha256": "1940a93ee08283a0a7286183186357b1688fe9fa8ede74604b424586aaddf112",
+      "scale": 4,
+      "size_mb": 4.9,
+      "backends": ["cpu", "cuda", "directml", "vulkan"],
+      "ncnn_param": "realesr_general_x4v3.ncnn.param",
+      "ncnn_bin": "realesr_general_x4v3.ncnn.bin",
+      "description": "Modelo compacto y rapido para escenas reales. Buen balance calidad/velocidad para cintas VHS. Exportado de los pesos oficiales Real-ESRGAN v0.2.5.0."
+    },
+    {
+      "id": "realesrgan-x4plus",
+      "name": "Real-ESRGAN x4plus (maxima calidad)",
+      "file": "RealESRGAN_x4plus_fp32.onnx",
+      "url": "https://huggingface.co/universonic/RealESRGAN/resolve/main/RealESRGAN_x4plus_fp32.onnx",
+      "sha256": "da8f300d2199427a57821ac34762b4f3fbab8f6df1c6d189422f885b59ff5d23",
+      "scale": 4,
+      "size_mb": 67.0,
+      "backends": ["cpu", "cuda", "directml", "vulkan"],
+      "ncnn_param": "RealESRGAN_x4plus_fp32.ncnn.param",
+      "ncnn_bin": "RealESRGAN_x4plus_fp32.ncnn.bin",
+      "description": "Modelo grande con mas capacidad de detalle. Mucho mas lento que x4v3; recomendado solo con GPU."
+    }
+  ]
+}

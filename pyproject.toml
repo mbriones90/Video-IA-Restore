@@ -1,0 +1,65 @@
+[project]
+name = "vhs-upscaler"
+version = "0.1.0"
+description = "Restaurador y escalador de videos VHS a 1080p con IA, para Windows"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python-headless>=4.9",
+    "PySide6>=6.7",
+    "imageio-ffmpeg>=0.4.9",
+    "ncnn>=1.0.20240410",  # backend Vulkan (convive con ONNX Runtime, no entra en conflicto)
+    # Conversion del modelo a fp16 (model_opt.py). Si faltan, la app sigue
+    # funcionando en fp32: la optimizacion se salta con un aviso en el log.
+    "onnx>=1.16",
+    "onnxconverter-common>=1.14",
+]
+
+# Grupos de backend: el .bat instala SOLO uno segun el hardware elegido.
+# onnxruntime / onnxruntime-gpu / onnxruntime-directml comparten el mismo
+# namespace de Python, por eso se declaran en conflicto y nunca se mezclan.
+[dependency-groups]
+cpu = ["onnxruntime>=1.17"]
+# onnxruntime-gpu >=1.21 se compila contra CUDA 13 + cuDNN 9. Los extras
+# [cuda,cudnn] traen esas librerias como wheels de NVIDIA dentro del venv
+# (nvidia-cublas, nvidia-cudnn-cu13, nvrtc, cufft, curand), asi no hace
+# falta un CUDA Toolkit instalado en el sistema. inference.py llama a
+# ort.preload_dlls() para que Windows las encuentre.
+cuda = ["onnxruntime-gpu[cuda,cudnn]>=1.23"]
+directml = ["onnxruntime-directml>=1.17"]
+# Desentrelazado profesional QTGMC (VapourSynth). Compatible con cualquier grupo.
+qtgmc = [
+    "vapoursynth>=82",
+    "vsdeinterlace>=0.9.3",
+    "vapoursynth-ffms2>=5",
+    "vapoursynth-fmtconv>=31",
+    "vapoursynth-znedi3>=3.3",
+    "vapoursynth-mvtools>=29",
+    "vapoursynth-mvutensils==9",  # vsdeinterlace 0.9.3 es incompatible con v10
+    "vapoursynth-resize2>=0.5",
+]
+
+# Solo para desarrollo: no se instala en las PCs que unicamente procesan video.
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Las pruebas que necesitan GPU o FFmpeg se marcan y se pueden excluir con
+#   uv run pytest -m "not slow"
+markers = [
+    "slow: necesita FFmpeg, VapourSynth o GPU (no corre en cualquier maquina)",
+]
+
+[tool.uv]
+conflicts = [
+    [{ group = "cpu" }, { group = "cuda" }],
+    [{ group = "cpu" }, { group = "directml" }],
+    [{ group = "cuda" }, { group = "directml" }],
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vhs_upscaler"]
