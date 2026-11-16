@@ -11,6 +11,7 @@ El escalado se hace por bloques (tiles) con solape para:
 
 from __future__ import annotations
 
+import atexit
 from pathlib import Path
 
 import numpy as np
@@ -298,6 +299,19 @@ class NcnnUpscaler(TiledUpscaler):
         self.net.load_param(str(param_path))
         self.net.load_model(str(bin_path))
         self.in_blob, self.out_blob = _find_ncnn_blobs(param_path)
+        # Red de seguridad: si nadie llama a close(), que al menos la instancia
+        # Vulkan se cierre antes de que el interprete empiece a desmontar
+        # modulos. Sin esto el proceso acaba en SIGSEGV con el trabajo ya hecho.
+        atexit.register(self.close)
+
+    def close(self) -> None:
+        """Suelta la red y cierra Vulkan. Idempotente: close() y atexit a la vez."""
+        from .hardware import close_vulkan
+
+        net, self.net = getattr(self, "net", None), None
+        if net is not None:
+            net.clear()
+        close_vulkan(getattr(self, "ncnn_module", None))
 
     def _run_tile(self, tile: np.ndarray) -> np.ndarray:
         th, tw = tile.shape[:2]

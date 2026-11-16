@@ -70,11 +70,38 @@ def detect_nvidia_gpu() -> str | None:
 
 
 def get_vulkan_gpu_count() -> int:
+    """Cuantas GPUs ve ncnn por Vulkan. Cero si ncnn no esta o falla.
+
+    get_gpu_count() crea la instancia Vulkan de forma implicita. Si se queda
+    viva, al cerrar el interprete la liberacion llega en mal orden y el proceso
+    muere con SIGSEGV (codigo 139) DESPUES de haber hecho su trabajo: el video
+    sale bien, pero quien mire el codigo de salida cree que fallo.
+
+    Aqui solo hace falta contar, asi que se destruye enseguida. Si luego se usa
+    de verdad el backend Vulkan, ncnn la vuelve a crear sola (comprobado:
+    contar, destruir y volver a contar funciona), y de cerrarla se encarga
+    NcnnUpscaler.close().
+    """
     try:
         import ncnn
+    except Exception:
+        return 0
+    try:
         return int(ncnn.get_gpu_count())
     except Exception:
         return 0
+    finally:
+        close_vulkan(ncnn)
+
+
+def close_vulkan(ncnn_module=None) -> None:
+    """Libera la instancia Vulkan de ncnn. Se puede llamar de mas: es idempotente."""
+    try:
+        if ncnn_module is None:
+            import ncnn as ncnn_module
+        ncnn_module.destroy_gpu_instance()
+    except Exception:
+        pass
 
 
 def get_ort_providers() -> list[str]:

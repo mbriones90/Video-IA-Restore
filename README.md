@@ -434,6 +434,29 @@ Como funciona:
 - ROCm en Windows no es oficial para esta iGPU; si algun dia lo es, se puede
   anadir como grupo igual que los demas.
 
+### Cerrar Vulkan al salir
+
+`ncnn.get_gpu_count()` crea la instancia Vulkan de forma implicita, y si se
+queda viva el proceso muere con **SIGSEGV (codigo de salida 139)** al cerrar el
+interprete: la liberacion llega en mal orden cuando Python ya esta desmontando
+modulos.
+
+Lo llamativo es que pasaba **despues** de terminar el trabajo. El video quedaba
+completo y correcto, asi que no se notaba a ojo. Pero cualquier `.bat` o script
+que mirara el codigo de salida daba la exportacion por fallida, y un error de
+verdad habria quedado tapado por el mismo 139.
+
+El programa cierra la instancia en dos puntos:
+
+- `get_vulkan_gpu_count()` solo necesita contar, asi que la destruye enseguida.
+  Si luego se usa el backend Vulkan, ncnn la vuelve a crear sola.
+- `NcnnUpscaler.close()` suelta la red y la cierra al acabar, con un `atexit`
+  de red de seguridad por si nadie llama a `close()`.
+
+Hay tests que lo fijan en `tests/test_salida_limpia.py`. Un segfault no se puede
+comprobar dentro del propio proceso, asi que lanzan un subproceso y miran con
+que codigo vuelve.
+
 ## Metodo de limpieza: hqdn3d o MVTools
 
 | metodo | que hace | cuando |
