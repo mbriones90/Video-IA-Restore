@@ -211,6 +211,20 @@ Coste: **0.53 ms por fotograma** (una LUT de 256 entradas). En CLI:
 
 Se ve en la vista previa, asi que puedes calibrarla sin exportar.
 
+**Viene activada**: los cuatro presets la encienden, con la intensidad ajustada
+al tipo de cinta. Aclarar una escena oscura tambien sube el grano magnetico,
+asi que a mas ruido, mano mas ligera:
+
+| preset | intensidad |
+|---|---|
+| Facil - VHS estandar | 70 % |
+| Cinta muy ruidosa o danada | 55 % |
+| Cinta en buen estado | 50 % |
+| Maxima calidad | 80 % |
+
+Si prefieres el aspecto original, basta con quitar la casilla: el combo pasa a
+"Personalizado" y se respeta.
+
 ## Estabilizacion de brillo (deflicker)
 
 El control automatico de ganancia del reproductor sube y baja el brillo medio

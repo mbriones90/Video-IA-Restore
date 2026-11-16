@@ -745,6 +745,13 @@ class ConfigPage(QWidget):
             self.deband_check.setChecked(values.get("deband", False))
             self.grain_check.setChecked(values.get("grain", False))
             self.grain_slider.setValue(values.get("grain_strength", 6))
+            # Los presets fijan TODOS los controles, tambien los que no les
+            # interesan: si un preset no nombra una opcion, se deja en su valor
+            # por defecto en vez de arrastrar lo del preset anterior.
+            self.deflicker_check.setChecked(values.get("deflicker", False))
+            self.autoexp_check.setChecked(values.get("auto_exposure", False))
+            self.autoexp_target.setValue(values.get("auto_exposure_target", 56))
+            self.autoexp_strength.setValue(values.get("auto_exposure_strength", 70))
             self.mono_check.setChecked(values.get("audio_mono", False))
             self._set_combo(self.fps_combo, values.get("interpolate_fps", 0))
             self._set_combo(self.quality_mode_combo, values.get("quality_mode", "crf"))
