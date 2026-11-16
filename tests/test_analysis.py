@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from vhs_upscaler import analysis
-from vhs_upscaler.analysis import ColorInfo, CropResult, detect_field_parity
+from vhs_upscaler.analysis import (
+    Analysis, ColorInfo, CropResult, check_capture, detect_field_parity,
+)
 from vhs_upscaler.ffmpeg_utils import VideoInfo, probe_video
 
 IDET_TFF = (
@@ -148,6 +150,103 @@ def test_el_resumen_de_recorte_calcula_la_imagen_util():
     assert "480x360" in texto
 
 
+# --------------------------------------------- resolucion de captura -------
+
+def vi(w, h, fps=29.97, sar=1.0) -> VideoInfo:
+    return VideoInfo(Path("x.mp4"), w, h, fps, 1000, 40.0, sar)
+
+
+def test_una_captura_ntsc_nativa_pasa_sin_quejas():
+    c = check_capture(vi(720, 480))
+    assert c.severity == "ok"
+    assert not c.rescaled
+    assert c.standard_name == "NTSC D1"
+
+
+def test_una_captura_pal_nativa_pasa_sin_quejas():
+    c = check_capture(vi(720, 576, fps=25.0))
+    assert c.severity == "ok"
+    assert c.system == "pal"
+    assert c.expected_lines == 576
+
+
+def test_las_486_lineas_tambien_valen():
+    assert check_capture(vi(720, 486)).severity == "ok"
+
+
+def test_detecta_el_reescalado_del_caso_real():
+    """640x362 con 480x360 utiles: el caso que motivo este aviso."""
+    c = check_capture(vi(640, 362), CropResult(80, 0, 80, 2))
+    assert c.rescaled
+    assert c.severity == "grave"
+    assert (c.content_width, c.content_height) == (480, 360)
+    assert c.lost_pct == pytest.approx(50, abs=3)
+    assert "720x480" in c.summary()
+
+
+def test_un_lienzo_mas_grande_sin_perder_lineas_es_solo_aviso():
+    """Meter NTSC en un lienzo 16:9 agrega barras, no tira resolucion."""
+    c = check_capture(vi(854, 480), CropResult(87, 0, 87, 0))
+    assert not c.rescaled
+    assert c.severity == "aviso"
+    assert "no se perdio detalle" in c.summary()
+
+
+def test_el_sistema_se_deduce_de_los_fps_no_del_alto():
+    """El alto es justo lo que puede venir falseado por el reescalado."""
+    assert check_capture(vi(640, 360, fps=29.97)).system == "ntsc"
+    assert check_capture(vi(640, 360, fps=25.0)).system == "pal"
+    assert check_capture(vi(640, 360, fps=59.94)).system == "ntsc"
+
+
+def test_unos_fps_raros_no_disparan_el_aviso():
+    c = check_capture(vi(640, 360, fps=12.0))
+    assert c.system == "desconocido"
+    assert not c.rescaled, "sin saber el sistema no se puede acusar de nada"
+
+
+def test_el_pixel_no_cuadrado_cuenta_para_la_imagen_util():
+    c = check_capture(vi(720, 480, sar=8 / 9))
+    assert c.content_width == 640  # 720 * 8/9
+
+
+# ------------------------------------- el reescalado matiza la paridad -----
+
+def _analisis(parity_kind: str, capture_w: int, capture_h: int, crop=None):
+    fake_idet(_MP := None, None) if False else None
+    from vhs_upscaler.analysis import ParityResult
+    parity = {
+        "progressive": ParityResult("progressive", 1, 1, 98, 0, 0.98),
+        "bff": ParityResult("bff", 1, 95, 2, 2, 0.98),
+    }[parity_kind]
+    crop = crop or CropResult(0, 0, 0, 0)
+    cap = check_capture(vi(capture_w, capture_h), crop)
+    return Analysis(parity, crop, ColorInfo(), cap)
+
+
+def test_progresivo_sobre_captura_reescalada_lleva_matiz():
+    a = _analisis("progressive", 640, 362, CropResult(80, 0, 80, 2))
+    aviso = a.parity_caveat()
+    assert "NO es concluyente" in aviso
+    assert "resolucion nativa" in aviso
+
+
+def test_progresivo_sobre_captura_nativa_no_lleva_matiz():
+    assert _analisis("progressive", 720, 480).parity_caveat() == ""
+
+
+def test_un_veredicto_entrelazado_nunca_lleva_matiz():
+    """Si hay peinado, lo que dice idet es un hecho, no una sospecha."""
+    assert _analisis("bff", 640, 362, CropResult(80, 0, 80, 2)).parity_caveat() == ""
+
+
+def test_el_resumen_completo_incluye_el_aviso_de_captura():
+    a = _analisis("progressive", 640, 362, CropResult(80, 0, 80, 2))
+    texto = a.summary(vi(640, 362))
+    assert "captura reescalada" in texto
+    assert "NO es concluyente" in texto
+
+
 # ------------------------------------------------------ deteccion real -----
 
 @pytest.mark.slow
@@ -157,3 +256,6 @@ def test_analisis_real_sobre_un_clip_sintetico(sample_video):
     assert resultado.parity.parity in ("progressive", "auto")
     assert not resultado.crop.any
     assert resultado.color.matrix == "bt601"  # 640x480 es SD
+    # 640x480 es una resolucion de captura NTSC valida: no debe quejarse.
+    assert resultado.capture.severity == "ok"
+    assert not resultado.capture.rescaled

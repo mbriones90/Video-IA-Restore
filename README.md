@@ -169,6 +169,68 @@ se desactiva sola, sin molestar).
 Cerrar la app estando en pausa funciona: se reanuda primero para que el hilo
 pueda terminar, en vez de esperar al tiempo limite y matarlo.
 
+## Resolucion de captura
+
+El analisis comprueba tambien si la captura llega a la resolucion nativa de su
+sistema, porque lo que se tira **antes** de grabar no lo recupera despues
+ningun escalado con IA.
+
+El sistema se deduce de los **FPS**, no del alto: el alto es justo lo que
+puede venir falseado por un reescalado. Despues se compara la imagen util
+(ya sin barras negras y con el pixel no cuadrado corregido) contra las 480
+lineas de NTSC o las 576 de PAL.
+
+| veredicto | que significa |
+|---|---|
+| **ok** | 720x480, 720x576, 640x480... una resolucion de captura de verdad |
+| **aviso** | no es estandar, pero conserva las lineas del sistema: solo se metio en un lienzo mas grande, con barras. No se perdio detalle |
+| **grave** | faltan lineas: se reescalo antes de grabar y hay resolucion perdida |
+
+Ejemplo real de una captura mal configurada en OBS:
+
+```
+AVISO - captura reescalada: el archivo es 640x362 y la imagen util son
+480x360, cuando una captura NTSC nativa da 720x480.
+  Se perdio el 50% de los pixeles ANTES de grabar...
+```
+
+### Por que esto matiza el veredicto de "progresivo"
+
+`idet` detecta **peinado**, no entrelazado. Un reescalado vertical mezcla
+lineas vecinas, que en una senal entrelazada pertenecen a campos distintos, es
+decir a **instantes distintos**. El dentado desaparece, y a partir de ahi idet
+dira "progresivo" para siempre aunque el original tuviera campos y el
+movimiento haya quedado emborronado.
+
+Por eso, cuando el veredicto es progresivo **y** la captura viene reescalada,
+el analisis lo dice al lado, no al final:
+
+```
+Material PROGRESIVO (no entrelazado) con 100% de confianza...
+  OJO: este veredicto NO es concluyente. La imagen viene reescalada
+  verticalmente, y eso borra el peinado que idet busca...
+```
+
+Lo que sigue siendo cierto es que en **ese** archivo ya no queda nada que
+desentrelazar, asi que procesarlo con el desentrelazado apagado es correcto.
+
+### Como capturar a resolucion nativa en OBS
+
+1. Clic derecho en la fuente de captura -> **Propiedades** -> **Resolucion/FPS**
+   en *Personalizado*, y elige la nativa del dispositivo (**720x480** en NTSC)
+   y **29.97** o **59.94**.
+2. Pon el lienzo (**Base**) y la **Salida** a esa misma resolucion.
+3. Clic derecho en la fuente -> **Transformar -> Ajustar a la pantalla**, para
+   que no quede encogida dentro de la escena.
+4. Deja el desentrelazado de la fuente **desactivado**: ya lo hace QTGMC, y
+   mucho mejor.
+
+Luego comprueba el resultado con:
+
+```bat
+uv run python -m vhs_upscaler.cli "prueba.mp4" --analyze-only
+```
+
 ## Reanudar un trabajo cortado
 
 Una cinta de 2 h tarda horas. Si el proceso se corta al 80 % (apagon,

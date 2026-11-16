@@ -255,17 +255,141 @@ class Analysis:
     parity: ParityResult
     crop: CropResult
     color: ColorInfo
+    capture: "CaptureCheck"
 
     def summary(self, info: VideoInfo) -> str:
-        return "\n".join((
-            self.parity.summary(),
-            self.crop.summary(info.width, info.height),
-            self.color.summary(),
-        ))
+        lineas = [self.parity.summary()]
+        # El aviso del reescalado va JUNTO al veredicto de paridad, no al final:
+        # es justo lo que lo hace no concluyente, y separarlos invita a leer
+        # "progresivo" y dar el tema por cerrado.
+        aviso = self.parity_caveat()
+        if aviso:
+            lineas.append(aviso)
+        lineas.append(self.crop.summary(info.width, info.height))
+        lineas.append(self.color.summary())
+        lineas.append(self.capture.summary())
+        return "\n".join(lineas)
+
+    def parity_caveat(self) -> str:
+        """Matiza un 'progresivo' cuando la captura venia reescalada.
+
+        `idet` detecta PEINADO, no entrelazado. Un reescalado vertical mezcla
+        lineas vecinas, que en una senal entrelazada pertenecen a campos (y
+        por tanto a instantes) distintos: el dentado desaparece y a partir de
+        ahi idet dira "progresivo" para siempre, aunque el original tuviera
+        campos y el movimiento haya quedado emborronado.
+        """
+        if self.parity.parity != "progressive" or not self.capture.rescaled:
+            return ""
+        return (
+            "  OJO: este veredicto NO es concluyente. La imagen viene "
+            "reescalada verticalmente, y eso borra el peinado que idet busca. "
+            "Lo seguro es que en ESTE archivo ya no queda nada que "
+            "desentrelazar; si la cinta llego entrelazada a la capturadora, no "
+            "se puede saber desde aqui. Para salir de dudas, graba 30 s a la "
+            "resolucion nativa del dispositivo, sin escalar, y analiza eso."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Resolucion de captura
+# ---------------------------------------------------------------------------
+
+# Resoluciones a las que entrega una capturadora de verdad. Si el archivo no
+# es ninguna de estas, alguien escalo por el camino (el lienzo de OBS, casi
+# siempre).
+CAPTURE_STANDARDS = {
+    (720, 480): "NTSC D1", (720, 486): "NTSC D1 de 486 lineas",
+    (704, 480): "NTSC 4SIF", (640, 480): "NTSC de pixel cuadrado",
+    (352, 480): "Half-D1 NTSC",
+    (720, 576): "PAL D1", (704, 576): "PAL 4CIF",
+    (768, 576): "PAL de pixel cuadrado", (352, 576): "Half-D1 PAL",
+}
+# Lineas utiles que entrega cada sistema. Es el listón contra el que se mide
+# cuanta resolucion se tiro antes de grabar.
+SYSTEM_LINES = {"ntsc": 480, "pal": 576}
+
+
+@dataclass
+class CaptureCheck:
+    width: int             # tamano del fotograma en el archivo
+    height: int
+    content_width: int     # imagen util, ya sin barras y con el pixel corregido
+    content_height: int
+    system: str            # ntsc | pal | desconocido
+    expected_lines: int
+    standard_name: str     # "" si no coincide con ninguna resolucion de captura
+    rescaled: bool         # se perdio resolucion vertical antes de grabar
+    lost_pct: float        # % de pixeles perdidos frente a la captura nativa
+
+    @property
+    def severity(self) -> str:
+        if self.rescaled:
+            return "grave"
+        return "ok" if self.standard_name else "aviso"
+
+    def summary(self) -> str:
+        if self.severity == "ok":
+            return (f"Resolucion de captura: {self.width}x{self.height} "
+                    f"({self.standard_name}). Nativa, nada que objetar.")
+        if self.severity == "aviso":
+            return (f"Resolucion: {self.width}x{self.height}, con "
+                    f"{self.content_width}x{self.content_height} de imagen util. "
+                    f"No es una resolucion de captura estandar, pero conserva "
+                    f"las {self.expected_lines} lineas del sistema: no se "
+                    f"perdio detalle.")
+        objetivo = SYSTEM_LINES.get(self.system, self.expected_lines)
+        ancho = 720 if objetivo in (480, 576) else self.content_width
+        return (
+            f"AVISO - captura reescalada: el archivo es {self.width}x{self.height} "
+            f"y la imagen util son {self.content_width}x{self.content_height}, "
+            f"cuando una captura {self.system.upper()} nativa da "
+            f"{ancho}x{objetivo}.\n"
+            f"  Se perdio el {self.lost_pct:.0f}% de los pixeles ANTES de grabar, "
+            f"y eso no lo recupera ningun escalado con IA. Revisa en OBS el "
+            f"tamano del lienzo (Base), la resolucion de salida y el tamano de "
+            f"la fuente dentro de la escena: los tres deberian dejar la imagen "
+            f"a {ancho}x{objetivo} sin encoger."
+        )
+
+
+def check_capture(info: VideoInfo, crop: CropResult | None = None) -> CaptureCheck:
+    """Decide si la captura llega a la resolucion nativa de su sistema.
+
+    El sistema se deduce de los FPS, no del alto: el alto es justo lo que
+    puede venir falseado por un reescalado.
+    """
+    fps = info.fps or 0.0
+    # PAL primero y con rangos estrechos: un rango NTSC generoso se tragaba
+    # los 25 fps de PAL y lo clasificaba al reves.
+    if 24.5 <= fps <= 25.5 or 49.0 <= fps <= 51.0:
+        system = "pal"
+    elif 29.0 <= fps <= 30.5 or 58.0 <= fps <= 61.0:
+        system = "ntsc"
+    else:
+        system = "desconocido"
+    expected = SYSTEM_LINES.get(system, 480)
+
+    crop = crop or CropResult(0, 0, 0, 0)
+    content_h = max(1, info.height - crop.top - crop.bottom)
+    content_w = max(1, round((info.width - crop.left - crop.right) * (info.sar or 1.0)))
+
+    standard = CAPTURE_STANDARDS.get((info.width, info.height), "")
+    # Margen del 5 %: 486 contra 480, o un recorte de un par de lineas, no son
+    # un reescalado.
+    rescaled = system != "desconocido" and content_h < expected * 0.95
+    nativo = (720 if expected in (480, 576) else content_w) * expected
+    lost = max(0.0, 100.0 * (1.0 - (content_w * content_h) / nativo))
+    return CaptureCheck(
+        width=info.width, height=info.height,
+        content_width=content_w, content_height=content_h,
+        system=system, expected_lines=expected, standard_name=standard,
+        rescaled=rescaled, lost_pct=lost,
+    )
 
 
 def analyze(path: str, info: VideoInfo, progress=None) -> Analysis:
-    """Corre los tres analisis. `progress(texto)` se llama entre pasos."""
+    """Corre los analisis. `progress(texto)` se llama entre pasos."""
     def step(msg: str) -> None:
         log.info(msg)
         if progress:
@@ -277,4 +401,6 @@ def analyze(path: str, info: VideoInfo, progress=None) -> Analysis:
     crop = detect_crop(path, info)
     step("Leyendo rango y espacio de color...")
     color = detect_color(path, info)
-    return Analysis(parity, crop, color)
+    step("Comprobando la resolucion de captura...")
+    capture = check_capture(info, crop)
+    return Analysis(parity, crop, color, capture)

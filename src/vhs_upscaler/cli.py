@@ -210,6 +210,10 @@ def main() -> None:
         print("\n--- Analisis automatico de la cinta ---")
         resultado = run_analysis(args.input, info, progress=lambda m: print("  " + m))
         print(resultado.summary(info))
+        if resultado.capture.severity == "grave":
+            # Un reescalado invalida medio analisis y no se arregla desde aqui:
+            # conviene que no pase desapercibido entre el resto del volcado.
+            print("  (ver la seccion 'Resolucion de captura' del README)")
         apply_analysis(opts, resultado)
         print("Ajustes aplicados: " + describe_applied(opts, resultado))
         if args.analyze_only:
