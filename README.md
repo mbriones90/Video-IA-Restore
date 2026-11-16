@@ -454,9 +454,9 @@ que nunca fueron campos y devuelve aliasing vertical inventado.
 Lo correcto es **desactivar el desentrelazado y poner la limpieza en MVTools**:
 te quedas con la parte buena de QTGMC sin la parte que sobra.
 
-Registro detallado: D:\LOCALDEV\Video_upscaling_portable\output\logshs_upscaler.log
-Dispositivo: cuda | Providers ORT: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider
-Modelos conocidos: realesr-general-x4v3, realesrgan-x4plus, bicubic
+```bat
+uv run python -m vhs_upscaler.cli "video.mp4" --no-deinterlace --denoise-method mvtools
+```
 
 En la interfaz: desmarca *Desentrelazar* y elige *MVTools* en **Metodo de
 limpieza**.
@@ -465,7 +465,7 @@ limpieza**.
 
 MVTools corre dentro del grafo de VapourSynth, que **sustituye por completo**
 a la cadena de filtros de FFmpeg y no incluye bwdif ni yadif. Pedir
- dejaria el video sin desentrelazar y sin avisar.
+`bwdif + MVTools` dejaria el video sin desentrelazar y sin avisar.
 
 Antes que perder el desentrelazado en silencio, se degrada la limpieza a
 hqdn3d y se dice por que, tanto en el log como junto al control en la
