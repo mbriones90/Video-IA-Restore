@@ -127,3 +127,31 @@ def run_quiet(args: list[str]) -> subprocess.CompletedProcess:
         text=True,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+
+
+# --------------------------------------------------------------------------
+# Disponibilidad real de un codificador
+#
+# "ffmpeg -encoders" solo dice que el codificador esta COMPILADO, no que la
+# maquina pueda usarlo. av1_nvenc aparece en la lista en cualquier PC con
+# FFmpeg completo, pero solo funciona en GeForce RTX 40 o superior: en una
+# tarjeta anterior falla al abrir la sesion, ya empezada la exportacion.
+#
+# Asi que se prueba de verdad: un fotograma de color a la nada. Tarda unas
+# decimas y el resultado se guarda en memoria para no repetirlo.
+_ENCODER_CACHE: dict[str, bool] = {}
+
+
+def encoder_works(codec: str, ffmpeg: str | None = None) -> bool:
+    """True si este PC puede codificar de verdad con `codec`."""
+    if codec in _ENCODER_CACHE:
+        return _ENCODER_CACHE[codec]
+    exe = ffmpeg or get_ffmpeg_exe()
+    proc = run_quiet([
+        exe, "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "color=c=black:s=320x240:d=1:r=5",
+        "-c:v", codec, "-frames:v", "5", "-f", "null", "-",
+    ])
+    ok = proc.returncode == 0
+    _ENCODER_CACHE[codec] = ok
+    return ok

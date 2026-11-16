@@ -41,7 +41,9 @@ from pathlib import Path
 
 import numpy as np
 
-from .ffmpeg_utils import VideoInfo, get_ffmpeg_exe, probe_video
+from .ffmpeg_utils import (
+    VideoInfo, encoder_works, get_ffmpeg_exe, probe_video,
+)
 from .inference import create_upscaler
 from .logging_setup import get_logger
 from .paths import OUTPUT_DIR, ROOT_DIR
@@ -79,6 +81,31 @@ EXPORT_FORMATS = {
         "video": "libx265", "audio": "aac", "ext": "mkv", "rate": True,
         "pix_fmt": "yuv420p",
     },
+    # AV1. El archivo baja mucho de tamano a igual calidad, pero no lo
+    # reproduce todo: TV, telefono o navegador de 2020 en adelante si, un
+    # reproductor viejo no. Para guardar el maestro de la cinta es un buen
+    # cambio; para mandarle el video a un familiar, H.264 sigue siendo la
+    # apuesta segura.
+    "mp4_av1": {
+        "label": "MP4 - AV1 por GPU NVIDIA (mas comprimido, requiere RTX 40)",
+        "video": "av1_nvenc", "audio": "aac", "ext": "mp4", "rate": True,
+        "pix_fmt": "yuv420p", "fallback": "mp4_h265",
+    },
+    "mkv_av1": {
+        "label": "MKV - AV1 por GPU NVIDIA (mas comprimido, requiere RTX 40)",
+        "video": "av1_nvenc", "audio": "aac", "ext": "mkv", "rate": True,
+        "pix_fmt": "yuv420p", "fallback": "mkv_h265",
+    },
+    # Comprime un ~12% mejor que el codificador de la tarjeta a igual calidad
+    # y aun asi casi nunca merece la pena: suelto va a 6 fps frente a los 370
+    # de la tarjeta, y es el unico codec que se convierte en cuello de botella
+    # del pipeline completo (14.6 -> 11.0 fps medidos). Esta para PCs sin
+    # RTX 40.
+    "mp4_av1_cpu": {
+        "label": "MP4 - AV1 por CPU (muy lento, para PC sin RTX 40)",
+        "video": "libaom-av1", "audio": "aac", "ext": "mp4", "rate": True,
+        "pix_fmt": "yuv420p", "fallback": "mp4_h265",
+    },
     "webm_vp9": {
         "label": "WebM - VP9 (ideal para web)",
         "video": "libvpx-vp9", "audio": "libopus", "ext": "webm", "rate": True,
@@ -87,11 +114,51 @@ EXPORT_FORMATS = {
 }
 
 # CRF optimo por codec segun calidad (VP9 usa una escala distinta a x264/x265).
+# AV1 usa cuantizador 0-63, no 0-51 como H.264/H.265: los numeros NO son
+# comparables entre codecs. "Alta" son CRF 17 en H.264 y cq 26 en AV1, y dan
+# la misma calidad medida.
+#
+# Medido sobre 10 s reales de salida del pipeline (1080p60, captura VHS
+# escalada con realesr-general-x4v3). VMAF contra la exportacion H.264 CRF 17,
+# que es la calidad que ya damos por buena:
+#
+#   x264 crf17      16.9 Mbps  VMAF 81.9   <- la referencia
+#   av1_nvenc cq26  14.7 Mbps  VMAF 82.1   mejor calidad y 13% menos peso
+#   av1_nvenc cq30  10.3 Mbps  VMAF 81.3   39% menos peso
+#   x265  crf18      9.4 Mbps  VMAF 79.9
+#   av1_nvenc cq34   7.3 Mbps  VMAF 80.0   lo mismo que x265 crf18, 22% menos
+#   libaom    crf16  9.5 Mbps  VMAF 81.4   mas eficiente que la GPU...
+#   libaom    crf24  6.4 Mbps  VMAF 79.9   ...pero a 6 fps en vez de 370
 CODEC_CRF = {
     "libx264": {"alta": "17", "media": "20", "rapida": "23"},
     "libx265": {"alta": "18", "media": "21", "rapida": "24"},
     "libvpx-vp9": {"alta": "30", "media": "33", "rapida": "36"},
+    "av1_nvenc": {"alta": "26", "media": "30", "rapida": "34"},
+    # Elegidos para acercarse a esos tres niveles usando solo puntos medidos
+    # (VMAF 81.4 / 80.7 / 79.9 frente a 82.1 / 81.3 / 80.0 de la GPU).
+    "libaom-av1": {"alta": "16", "media": "20", "rapida": "24"},
 }
+
+
+def resolve_export_format(export_format: str, log=None, ffmpeg: str | None = None):
+    """Devuelve (clave, formato) comprobando que el codificador exista AQUI.
+
+    av1_nvenc esta compilado en cualquier FFmpeg completo, pero solo funciona
+    en GeForce RTX 40 o superior. Sin esta comprobacion, en una tarjeta
+    anterior el fallo salta con la exportacion ya empezada y lo unico que se ve
+    es que FFmpeg murio. Mejor avisar antes y bajar a H.265: archivo algo mayor
+    pero funciona en todas partes.
+    """
+    clave = export_format if export_format in EXPORT_FORMATS else "mp4_h264"
+    fmt = EXPORT_FORMATS[clave]
+    alt = fmt.get("fallback")
+    if not alt or encoder_works(fmt["video"], ffmpeg):
+        return clave, fmt
+    if log:
+        log(f"Aviso: este PC no puede codificar con {fmt['video']} "
+            f"(AV1 por GPU necesita una GeForce RTX 40 o superior). "
+            f"Se usa en su lugar: {EXPORT_FORMATS[alt]['label']}.")
+    return alt, EXPORT_FORMATS[alt]
 
 # Carpeta de trabajo de los segmentos (permite reanudar un trabajo cortado).
 JOBS_DIR = OUTPUT_DIR / ".jobs"
@@ -814,7 +881,7 @@ class VideoProcessor:
                     f"(se descarta el valor aproximado {fps_out:.5f})")
                 fps_out = exact
 
-        fmt = EXPORT_FORMATS.get(opts.export_format, EXPORT_FORMATS["mp4_h264"])
+        _, fmt = resolve_export_format(opts.export_format, log, ffmpeg)
         output = Path(opts.output_path).with_suffix("." + fmt["ext"])
         output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -928,7 +995,11 @@ class VideoProcessor:
         codec = fmt["video"]
         crf = CODEC_CRF.get(codec, CODEC_CRF["libx264"]).get(
             opts.quality, QUALITY_PRESETS.get(opts.quality, QUALITY_PRESETS["alta"])["crf"])
-        return f"CRF {crf} (calidad constante)"
+        # El codificador de la tarjeta no usa -crf sino -cq: llamarlo "CRF"
+        # en el log invita a comparar su 26 con el 17 de H.264, que es justo
+        # la confusion que hay que evitar.
+        etiqueta = "cq" if codec == "av1_nvenc" else "CRF"
+        return f"{etiqueta} {crf} (calidad constante)"
 
     # -- Un segmento ---------------------------------------------------------
 
@@ -1132,12 +1203,29 @@ class VideoProcessor:
                 mbps = max(0.5, float(opts.bitrate_mbps))
                 rate_args = ["-b:v", f"{mbps:g}M", "-maxrate", f"{mbps * 1.5:g}M",
                              "-bufsize", f"{mbps * 2:g}M"]
+                if codec == "av1_nvenc":
+                    # NVENC por defecto no hace VBR: sin pedirlo ignora maxrate
+                    # y bufsize.
+                    rate_args = ["-rc", "vbr"] + rate_args
             else:
                 crf = CODEC_CRF.get(codec, CODEC_CRF["libx264"]).get(opts.quality, q["crf"])
-                rate_args = ["-crf", crf]
-                if codec == "libvpx-vp9":
-                    rate_args += ["-b:v", "0", "-deadline", "good",
-                                  "-cpu-used", "4", "-row-mt", "1"]
+                if codec == "av1_nvenc":
+                    # NVENC no entiende -crf. Su modo de calidad constante es
+                    # VBR con -cq y bitrate objetivo a cero; sin el "-b:v 0"
+                    # se queda en el bitrate por defecto y -cq no hace nada.
+                    rate_args = ["-rc", "vbr", "-cq", crf, "-b:v", "0",
+                                 "-preset", "p5", "-tune", "hq"]
+                else:
+                    rate_args = ["-crf", crf]
+                    if codec == "libvpx-vp9":
+                        rate_args += ["-b:v", "0", "-deadline", "good",
+                                      "-cpu-used", "4", "-row-mt", "1"]
+                    elif codec == "libaom-av1":
+                        # Igual que VP9: sin "-b:v 0" libaom entiende el crf
+                        # como techo dentro de un bitrate, no como calidad
+                        # constante.
+                        rate_args += ["-b:v", "0", "-cpu-used", "6",
+                                      "-row-mt", "1"]
         cmd = [
             ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
             "-f", "rawvideo", "-pix_fmt", "bgr24",

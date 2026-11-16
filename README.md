@@ -505,14 +505,69 @@ que se calculan con la proporcion real del video cargado. Ejemplo con VHS 4:3:
 Si tu video ya es 16:9, la variante 16:9 coincide con la nativa y no agrega barras.
 **Ninguna opcion estira ni recorta la imagen**: solo cambia el lienzo de salida.
 
+## Formatos de salida
+
+| Formato | Codec | Para que |
+|---|---|---|
+| **MP4 H.264** | libx264 | Lo reproduce cualquier cosa. El mas seguro para mandarle el video a un familiar |
+| **MP4/MKV H.265** | libx265 | Misma calidad, archivo mas pequeno |
+| **MP4/MKV AV1 por GPU** | av1_nvenc | El mas comprimido a igual calidad. **Recomendado para guardar el maestro** |
+| **MP4 AV1 por CPU** | libaom-av1 | Solo si no hay GeForce RTX 40 |
+| **WebM VP9** | libvpx-vp9 | Para subir a webs |
+
+AV1 lo reproduce cualquier TV, telefono o navegador de 2020 en adelante, pero no
+un reproductor viejo. El audio siempre va en AAC 192 kbps.
+
+**AV1 por GPU necesita una GeForce RTX 40 o superior.** Aparece en la lista de
+cualquier FFmpeg completo, asi que el programa no se fia: antes de empezar prueba
+a codificar cinco fotogramas de verdad y, si la tarjeta no puede, baja a H.265
+avisando en el log en vez de morirse a mitad de la exportacion.
+
+### Por que AV1 por GPU y no por CPU
+
+El codificador de AV1 de la tarjeta es un chip aparte, independiente de los
+nucleos que hacen el escalado con IA, asi que no le roba velocidad: el proceso
+completo va igual de rapido que con H.264. El de CPU comprime un ~12% mejor,
+pero va a 6 fps frente a los 370 de la tarjeta, y es el unico codec que llega a
+frenar el pipeline entero (14.6 -> 11.0 fps medidos de punta a punta).
+
+### Que calidad poner, y por que los numeros no se comparan
+
+AV1 usa un cuantizador de **0 a 63**, no de 0 a 51 como H.264 y H.265. El "cq 26"
+de AV1 y el "CRF 17" de H.264 son el mismo nivel de calidad; copiar el 17 a AV1
+daria un archivo enorme sin ganar nada. Por eso cada codec tiene su propia tabla
+y la interfaz dice debajo del formato cual es el valor real.
+
+Medido sobre 10 s reales de salida del pipeline (captura VHS a 1080p60 escalada
+con `realesr-general-x4v3`), con VMAF contra la exportacion H.264 CRF 17:
+
+| Ajuste | Bitrate | VMAF | |
+|---|---|---|---|
+| x264 CRF 17 | 16.9 Mbps | 81.9 | la referencia (nivel "Alta" de siempre) |
+| **av1_nvenc cq 26** | **14.7 Mbps** | **82.1** | nivel "Alta": mejor calidad y 13% menos peso |
+| **av1_nvenc cq 30** | **10.3 Mbps** | **81.3** | nivel "Media": 39% menos peso |
+| x265 CRF 18 | 9.4 Mbps | 79.9 | |
+| **av1_nvenc cq 34** | **7.3 Mbps** | **80.0** | nivel "Rapida": lo mismo que x265 CRF 18 con 22% menos |
+| libaom CRF 16 | 9.5 Mbps | 81.4 | mas eficiente que la tarjeta... |
+| libaom CRF 24 | 6.4 Mbps | 79.9 | ...pero a 6 fps |
+
+**Para una cinta familiar, "Media" con AV1 por GPU es el punto dulce**: unos
+10 Mbps a 1080p60, practicamente la misma calidad que el H.264 "Alta" de antes y
+con el archivo a poco mas de la mitad.
+
 ## Ancho de banda del encode (Mbps)
 
 En el paso 2, "Modo de tasa" permite elegir:
 - **CRF (calidad constante):** el tamano final varia segun el contenido.
+  **Es el modo recomendado**, porque una cinta alterna planos quietos con otros
+  muy movidos: un bitrate fijo desperdicia datos en los primeros y se queda
+  corto en los segundos.
 - **Bitrate objetivo en Mbps:** tamano predecible. El pico se limita a 1.5x.
 
-Referencias orientativas: 1080p ~ 8-16 Mbps, 1440p ~ 16-24 Mbps, 4K ~ 32-50 Mbps.
-El audio siempre va en AAC 192 kbps.
+Si aun asi quieres fijar el bitrate, orientativo a **30 fps**: 1080p ~ 8-16 Mbps,
+1440p ~ 16-24 Mbps, 4K ~ 32-50 Mbps. **A 60 fps hay que subirlo del orden de
+1.5x** (no el doble: entre fotogramas consecutivos hay mas parecido que
+aprovechar). Con AV1 se puede bajar a la mitad de esas cifras.
 
 ## Linea de comandos (opcional)
 
@@ -521,6 +576,8 @@ uv run python -m vhs_upscaler.cli "C:\ruta\video.mkv" --device directml
 uv run python -m vhs_upscaler.cli "video.mkv" --model bicubic --device cpu
 uv run python -m vhs_upscaler.cli "video.mkv" --height 2160 --canvas native --bitrate-mbps 40
 uv run python -m vhs_upscaler.cli "video.mkv" --height 1080 --canvas 169 --bitrate-mbps 12
+REM Maestro de la cinta en AV1 por GPU (el punto dulce):
+uv run python -m vhs_upscaler.cli "video.mkv" --format mkv_av1 --quality media
 REM Prueba rapida con paridad NTSC y recorte de overscan:
 uv run python -m vhs_upscaler.cli "video.mkv" --test --parity bff --crop 8,0,8,6
 REM Analizar la cinta (paridad, overscan, color), aplicar y procesar:

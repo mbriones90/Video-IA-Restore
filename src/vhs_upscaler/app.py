@@ -569,17 +569,29 @@ class ConfigPage(QWidget):
         self.format_combo.setCurrentIndex(max(0, self.format_combo.findData(selected or "mp4_h264")))
         self.format_combo.setToolTip(
             "Formato del archivo final.\n"
-            "- MP4 H.264: funciona en cualquier telefono, TV o PC (recomendado).\n"
+            "- MP4 H.264: funciona en cualquier telefono, TV o PC. El mas seguro\n"
+            "  para mandarle el video a un familiar.\n"
             "- MP4/MKV H.265: misma calidad con archivo mas pequeno.\n"
+            "- MP4/MKV AV1 por GPU: entre un 13% y un 39% menos de peso\n"
+            "  que H.264 a igual calidad, y sale casi gratis porque lo\n"
+            "  codifica un chip aparte de la tarjeta, no los nucleos que\n"
+            "  hacen el escalado. Pide GeForce RTX 40 o superior; si no la\n"
+            "  hay, baja a H.265 avisando. Es la mejor opcion para guardar\n"
+            "  el maestro de la cinta.\n"
+            "- MP4 AV1 por CPU: comprime algo mejor, pero tan lento que\n"
+            "  frena todo el proceso. Solo para un PC sin RTX 40.\n"
             "- WebM VP9: ideal para subir a webs.\n"
-            "- MOV ProRes: para seguir editando el video (grandisimo).\n"
-            "- MKV FFV1: sin perdida de calidad ninguna (el mas pesado).\n"
-            "ProRes y FFV1 no usan CRF ni bitrate (son de calidad fija)."
+            "AV1 lo reproduce cualquier TV, telefono o navegador de 2020 en\n"
+            "adelante, pero no un reproductor viejo."
         )
         out_form.addRow("Formato:", self.format_combo)
+        self.format_note = QLabel("")
+        self.format_note.setWordWrap(True)
+        self.format_note.setObjectName("muted")
+        out_form.addRow("", self.format_note)
         self.quality_combo = QComboBox()
-        for q, desc in (("alta", "Alta (CRF 17)"), ("media", "Media (CRF 20)"),
-                        ("rapida", "Rapida (CRF 23, archivo menor)")):
+        for q, desc in (("alta", "Alta"), ("media", "Media"),
+                        ("rapida", "Rapida (archivo menor)")):
             self.quality_combo.addItem(desc, q)
         self.quality_combo.setCurrentIndex(max(0, self.quality_combo.findData(cfg.quality)))
         self.quality_combo.setToolTip(
@@ -693,6 +705,11 @@ class ConfigPage(QWidget):
         layout.addWidget(prev_box)
         self._update_model_desc()
         self._refresh_denoise_method()
+        self._refresh_format_note()
+        self.format_combo.currentIndexChanged.connect(self._refresh_format_note)
+        self.quality_combo.currentIndexChanged.connect(self._refresh_format_note)
+        self.quality_mode_combo.currentIndexChanged.connect(
+            self._refresh_format_note)
         self.refresh_sizes()
 
         # Cualquier cambio manual devuelve el combo de presets a "Personalizado".
@@ -848,6 +865,35 @@ class ConfigPage(QWidget):
         d = QFileDialog.getExistingDirectory(self, "Carpeta de salida", self.output_dir_edit.text())
         if d:
             self.output_dir_edit.setText(d)
+
+    def _refresh_format_note(self, *_):
+        """Explica el cuantizador real, que no es comparable entre codecs.
+
+        "Alta" son CRF 17 en H.264 y cq 26 en AV1, y los dos dan la misma
+        calidad medida. Sin esta nota, el 26 parece mucho peor que el 17.
+        """
+        from .pipeline import CODEC_CRF, EXPORT_FORMATS
+
+        clave = self.format_combo.currentData() or "mp4_h264"
+        fmt = EXPORT_FORMATS.get(clave, EXPORT_FORMATS["mp4_h264"])
+        codec = fmt["video"]
+        calidad = self.quality_combo.currentData() or "alta"
+        if self.quality_mode_combo.currentData() == "bitrate":
+            self.format_note.setText("")
+            return
+        q = CODEC_CRF.get(codec, CODEC_CRF["libx264"]).get(calidad, "?")
+        if codec == "av1_nvenc":
+            texto = (f"AV1 por GPU, cq {q}. Misma calidad medida que CRF "
+                     f"{CODEC_CRF['libx264'][calidad]} en H.264, con un 13% a 39% "
+                     f"menos de peso segun el nivel. La escala de AV1 va de 0 "
+                     f"a 63, asi que su numero no se compara con el de H.264.")
+        elif codec == "libaom-av1":
+            texto = (f"AV1 por CPU, CRF {q}. Comprime un ~12% mejor que el de "
+                     f"GPU, pero baja el ritmo del proceso completo de unos "
+                     f"15 a unos 11 fps: es el unico codec que estorba.")
+        else:
+            texto = f"{codec}, CRF {q}."
+        self.format_note.setText(texto)
 
     def _refresh_denoise_method(self, *_):
         """Avisa junto al control cuando MVTools no cabe con lo elegido."""

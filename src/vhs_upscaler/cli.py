@@ -91,9 +91,10 @@ def main() -> None:
     parser.add_argument("--model", default=None,
                         help="id del modelo del manifiesto, o 'bicubic' para prueba sin IA")
     parser.add_argument("--format", default="mp4_h264",
-                        choices=["mp4_h264", "mp4_h265", "mkv_h264", "mkv_h265",
-                                 "webm_vp9", "mov_prores", "mkv_ffv1"],
-                        help="Formato de export (ver EXPORT_FORMATS en pipeline.py)")
+                        choices=list(EXPORT_FORMATS),
+                        help="Formato de export. "
+                             + "; ".join(f"{k}: {v['label']}"
+                                         for k, v in EXPORT_FORMATS.items()))
     parser.add_argument("--quality", default="alta", choices=["alta", "media", "rapida"])
     parser.add_argument("--height", type=int, default=1080, choices=[720, 1080, 1440, 2160],
                         help="Altura de salida (2160 = 4K)")
