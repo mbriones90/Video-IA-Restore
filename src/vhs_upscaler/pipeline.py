@@ -942,9 +942,9 @@ class VideoProcessor:
                 f"{opts.auto_exposure_target}, intensidad {opts.auto_exposure_strength}%, "
                 f"suavizado {opts.auto_exposure_smoothing} frames.")
 
+        # El aviso no se registra aqui: el __init__ del upscaler ya lo hace con
+        # este mismo log, y salia duplicado.
         upscaler = create_upscaler(opts.model_id, opts.device, log=log, fp16=opts.fp16)
-        if upscaler.warning:
-            log(upscaler.warning)
         if getattr(upscaler, "fp16", False):
             log("Modelo en fp16: calculo de media precision en la GPU (~1.3x mas rapido).")
 

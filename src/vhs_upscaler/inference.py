@@ -42,6 +42,67 @@ def _providers_for(device: str) -> list[str]:
     return base
 
 
+# Marcas de error que significan "la GPU ya no sirve". El contexto esta roto y
+# no hay reintento que valga: toca cerrar el proceso. El caso tipico en Windows
+# es el TDR (Timeout Detection and Recovery): si una operacion en la GPU tarda
+# mas que el limite del sistema (2 s por defecto), Windows da el driver por
+# colgado y lo reinicia. A partir de ahi toda llamada CUDA del proceso devuelve
+# 999, incluido un simple cudaMemcpyAsync.
+_GPU_PERDIDA = (
+    "cuda failure 999",
+    "cudaerrorunknown",
+    "unknown error",
+    "cudnn_status_internal_error",
+    "an illegal memory access",
+    "device-side assert",
+    "context is destroyed",
+    "device lost",
+    "error_device_lost",
+    "misaligned address",
+)
+
+# Estas si se arreglan troceando el frame.
+_SIN_MEMORIA = (
+    "out of memory",
+    "cuda_error_out_of_memory",
+    "cudaerrormemoryallocation",
+    "failed to allocate",
+    "bad_alloc",
+    "vk_error_out_of_device_memory",
+)
+
+MENSAJE_GPU_PERDIDA = (
+    "La GPU dejo de responder y su driver se reinicio a media faena. No se "
+    "puede seguir: el contexto queda roto hasta cerrar el programa, y trocear "
+    "el frame no lo arregla.\n\n"
+    "En Windows esto es un TDR. Para confirmarlo, busca en el Visor de eventos "
+    "(registro Sistema) un error de 'nvlddmkm' con el texto 'Reset TDR "
+    "occurred'. Para que no vuelva a pasar: cierra lo que use la GPU de fondo "
+    "(fondos animados tipo Wallpaper Engine, juegos, overlays), y si se repite, "
+    "sube el limite de TDR de Windows o revisa el overclock del driver.\n\n"
+    "El trabajo no se pierde: vuelve a lanzar la misma exportacion y seguira "
+    "por el segmento donde iba."
+)
+
+
+class GpuPerdida(RuntimeError):
+    """La GPU se cayo a media faena. Reintentar no sirve de nada."""
+
+
+def clasifica_error_gpu(exc: BaseException) -> str:
+    """Devuelve "perdida", "memoria" u "otro" mirando el texto del error."""
+    texto = f"{exc}".lower()
+    if any(m in texto for m in _GPU_PERDIDA):
+        return "perdida"
+    if any(m in texto for m in _SIN_MEMORIA):
+        return "memoria"
+    return "otro"
+
+
+def _gpu_perdida(exc: BaseException) -> GpuPerdida:
+    return GpuPerdida(f"{MENSAJE_GPU_PERDIDA}\n\nError original: {exc}")
+
+
 class BicubicUpscaler:
     """Respaldo sin IA: util para probar el pipeline sin descargar modelos."""
 
@@ -71,6 +132,21 @@ class TiledUpscaler:
         """tile BGR uint8 -> SR BGR uint8 (escala xN). Implementa cada backend."""
         raise NotImplementedError
 
+    def _run_tile_vigilado(self, tile: np.ndarray) -> np.ndarray:
+        """_run_tile, pero traduce "la GPU se murio" a un error que se entiende.
+
+        Sin esto, un TDR a media faena sale como un muro de texto de CUDA y
+        nadie sabe que lo que hay que mirar es el driver, no el programa.
+        """
+        try:
+            return self._run_tile(tile)
+        except GpuPerdida:
+            raise
+        except Exception as exc:
+            if clasifica_error_gpu(exc) == "perdida":
+                raise _gpu_perdida(exc) from exc
+            raise
+
     def upscale(self, frame: np.ndarray) -> np.ndarray:
         # tile_size <= 0 => un solo pase con el frame completo: para material SD
         # (720x480 o menos) es ~2x mas rapido que trocear, porque evita tanto el
@@ -80,8 +156,16 @@ class TiledUpscaler:
             try:
                 return self._run_tile(frame)
             except Exception as exc:
+                # Antes esto suponia que cualquier error era falta de memoria y
+                # se ponia a trocear. Si lo que paso es que la GPU se murio,
+                # trocear no arregla nada y el mensaje miente sobre la causa.
+                clase = clasifica_error_gpu(exc)
+                if clase == "perdida":
+                    raise _gpu_perdida(exc) from exc
                 self.tile_size = 256
-                self._log(f"Frame completo no cabe en la GPU ({exc}). "
+                motivo = ("no cabe en la GPU" if clase == "memoria"
+                          else "no se pudo procesar de una vez")
+                self._log(f"Frame completo {motivo} ({exc}). "
                           f"Se continua por bloques de {self.tile_size} px.")
         h, w = frame.shape[:2]
         s = self.scale
@@ -100,7 +184,7 @@ class TiledUpscaler:
                 ex0, ey0 = max(0, x0 - ov), max(0, y0 - ov)
                 ex1, ey1 = min(w, x1 + ov), min(h, y1 + ov)
                 tile = frame[ey0:ey1, ex0:ex1]
-                sr = self._run_tile(tile)
+                sr = self._run_tile_vigilado(tile)
                 cx0, cy0 = (x0 - ex0) * s, (y0 - ey0) * s
                 out[y0 * s:y1 * s, x0 * s:x1 * s] = sr[cy0:cy0 + (y1 - y0) * s,
                                                        cx0:cx0 + (x1 - x0) * s]
@@ -198,8 +282,12 @@ class OnnxUpscaler(TiledUpscaler):
         if self.device != "cpu" and wanted not in active:
             self.warning = (
                 f"El proveedor '{wanted}' no se pudo activar; onnxruntime usara "
-                f"{active[0]}. El escalado sera mucho mas lento. Ejecuta sync.bat "
-                f"para reinstalar el runtime del backend '{device}'."
+                f"{active[0]}. El escalado sera mucho mas lento. "
+                f"Si antes si funcionaba, lo mas probable es que el driver de la "
+                f"GPU se haya reiniciado (TDR): cierra el programa, abrelo de "
+                f"nuevo y reanuda; si sigue igual, reinicia el PC. "
+                f"Si nunca ha funcionado, ejecuta sync.bat para reinstalar el "
+                f"runtime del backend '{device}'."
             )
             log(self.warning)
             self.device = "cpu"

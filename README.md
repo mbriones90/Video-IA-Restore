@@ -434,6 +434,62 @@ Como funciona:
 - ROCm en Windows no es oficial para esta iGPU; si algun dia lo es, se puede
   anadir como grupo igual que los demas.
 
+### Si la GPU se cae a media exportacion (CUDA 999 / TDR)
+
+Sintoma: a mitad de un trabajo largo aparece un muro de errores
+
+```
+CUDA failure 999: unknown error ; expr=cudaMemcpyAsync(...)
+CUDNN failure 4000: CUDNN_STATUS_INTERNAL_ERROR
+```
+
+y a partir de ahi onnxruntime cae a CPU.
+
+**No es un fallo del programa.** Es el **TDR** de Windows (*Timeout Detection and
+Recovery*): si una operacion en la GPU tarda mas que el limite del sistema (2
+segundos por defecto), Windows da el driver por colgado y lo reinicia. El
+contexto CUDA del proceso queda roto para siempre, asi que todas las llamadas
+siguientes devuelven 999, hasta un `cudaMemcpyAsync` trivial.
+
+Para confirmarlo, en PowerShell:
+
+```powershell
+Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='nvlddmkm'} | Select-Object -First 5 TimeCreated, @{n='Que';e={$_.Properties[1].Value}}
+```
+
+Si sale `Reset TDR occurred on GPUID:800` con la hora justo antes del error, era
+esto.
+
+**Que hacer:**
+
+- El trabajo **no se pierde**. Vuelve a lanzar la misma exportacion y seguira
+  por el segmento donde iba (los segmentos ya hechos quedan en
+  `output/.jobs/<id>/`). Ojo: tiene que ser la *misma* configuracion, porque un
+  cambio de resolucion o de formato cambia la huella y empieza de cero.
+- Cierra lo que use la GPU de fondo. Los fondos animados (Wallpaper Engine),
+  los overlays de juegos y los navegadores con aceleracion pelean por la GPU, y
+  bajo esa presion un kernel puede quedar en espera mas de 2 segundos.
+- Si se repite, sube el limite del TDR (clave `TdrDelay` en
+  `HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers`, en segundos,
+  requiere reiniciar). Es un ajuste del sistema: hazlo a mano y con cuidado.
+- Si pasa cada pocos minutos, sospecha del hardware antes que del software:
+  overclock o undervolt del driver, temperaturas o fuente de alimentacion.
+
+**Lo que el programa hace ahora.** Antes, cualquier error al procesar el frame
+completo se interpretaba como falta de memoria de GPU y se pasaba a trocear en
+bloques de 256 px. Con un TDR eso era mentira y no arreglaba nada: el contexto
+estaba muerto y cada bloque fallaba igual. Ahora `clasifica_error_gpu()` mira el
+texto del error y separa tres casos:
+
+| Caso | Ejemplo | Que hace |
+|---|---|---|
+| `perdida` | `CUDA failure 999`, `CUDNN_STATUS_INTERNAL_ERROR`, `device lost` | Aborta con una explicacion del TDR |
+| `memoria` | `CUDA_ERROR_OUT_OF_MEMORY`, `bad_alloc` | Trocea, que es lo que lo arregla |
+| `otro` | cualquier otra cosa | Trocea, pero sin afirmar la causa |
+
+Fijado en `tests/test_gpu_perdida.py`, con el texto literal del error que lo
+destapo.
+
 ### Cerrar Vulkan al salir
 
 `ncnn.get_gpu_count()` crea la instancia Vulkan de forma implicita, y si se
