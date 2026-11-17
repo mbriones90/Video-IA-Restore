@@ -1,5 +1,5 @@
 [project]
-name = "vhs-upscaler"
+name = "video-ia-restore"
 version = "0.1.0"
 description = "Restaurador y escalador de videos VHS a 1080p con IA, para Windows"
 requires-python = ">=3.12,<3.13"

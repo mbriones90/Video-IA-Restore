@@ -90,7 +90,7 @@ def main() -> None:
         archive = CACHE / Path(url).name
         if not archive.exists():
             print(f"  Descargando {Path(url).name}...")
-            req = urllib.request.Request(url, headers={"User-Agent": "vhs-upscaler"})
+            req = urllib.request.Request(url, headers={"User-Agent": "video-ia-restore"})
             with urllib.request.urlopen(req, timeout=120) as resp, open(archive, "wb") as f:
                 f.write(resp.read())
         dest = CACHE / archive.stem

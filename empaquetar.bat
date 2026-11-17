@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title VHS Upscaler - Empaquetar para otra PC
+title Video-IA-Restore - Empaquetar para otra PC
 
 REM ============================================================
 REM  empaquetar.bat - Copia SOLO lo necesario a una carpeta

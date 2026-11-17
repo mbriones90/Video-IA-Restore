@@ -85,7 +85,7 @@ def download(entry: ModelEntry, log=print) -> Path:
         entry.path.unlink()
     tmp = entry.path.with_suffix(entry.path.suffix + ".part")
     log(f"Descargando {entry.name} ({entry.size_mb:.1f} MB)...")
-    req = urllib.request.Request(entry.url, headers={"User-Agent": "vhs-upscaler"})
+    req = urllib.request.Request(entry.url, headers={"User-Agent": "video-ia-restore"})
     try:
         with urllib.request.urlopen(req, timeout=120) as resp, tmp.open("wb") as f:
             shutil.copyfileobj(resp, f, length=1024 * 512)

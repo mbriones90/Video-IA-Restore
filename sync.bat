@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
-title VHS Upscaler - Sincronizar entorno
+title Video-IA-Restore - Sincronizar entorno
 
 REM ============================================================
 REM  sync.bat - PREPARA el entorno (ejecutar UNA VEZ por PC, o

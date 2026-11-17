@@ -1116,7 +1116,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         ensure_dirs()
-        self.setWindowTitle("VHS Upscaler - Restaurador de cintas a 1080p")
+        self.setWindowTitle("Video-IA-Restore - Restaurador de cintas VHS con IA")
         self.resize(1100, 820)
         self.config = AppConfig.load()
         self.hardware = detect_hardware()

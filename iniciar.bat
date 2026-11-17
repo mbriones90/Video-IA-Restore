@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
-title VHS Upscaler
+title Video-IA-Restore
 
 REM ============================================================
 REM  iniciar.bat - SOLO abre la aplicacion.
@@ -50,7 +50,7 @@ if /i "%BACKEND%"=="auto" (
 
 echo.
 echo ============================================
-echo  Abriendo VHS Upscaler - backend: %BACKEND%
+echo  Abriendo Video-IA-Restore - backend: %BACKEND%
 echo  La CPU siempre queda de respaldo
 echo ============================================
 echo.

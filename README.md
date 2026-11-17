@@ -1,4 +1,4 @@
-# VHS Upscaler
+# Video-IA-Restore
 
 Aplicacion de escritorio para Windows que restaura grabaciones de VHS (capturadas con OBS)
 y las escala a **1080p con IA**, sin deformar la proporcion original.
@@ -764,3 +764,14 @@ output/.jobs/            Tramos de trabajos a medias (se borran al terminar)
 - Todo lo que sale en el cuadro de registro queda tambien en
   `output/logs/vhs_upscaler.log` (5 ficheros de 2 MB, rotativos).
 - Requiere Windows 10/11 de 64 bits. UV descarga Python 3.12 automaticamente.
+
+## Licencia
+
+El codigo esta bajo licencia **MIT** (ver [LICENSE](LICENSE)): uso libre,
+incluido el comercial, siempre que se conserve el aviso de copyright.
+
+Los pesos de modelo que este repositorio incluye en `models/` son obras
+derivadas de [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) y mantienen
+su licencia BSD de 3 clausulas. El detalle, junto con las licencias de las
+dependencias que se instalan en tiempo de ejecucion (Qt, FFmpeg, QTGMC,
+VapourSynth, CUDA), esta en [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

@@ -2,14 +2,14 @@ version = 1
 revision = 5
 requires-python = "==3.12.*"
 conflicts = [[
-    { package = "vhs-upscaler", group = "cpu" },
-    { package = "vhs-upscaler", group = "cuda" },
+    { package = "video-ia-restore", group = "cpu" },
+    { package = "video-ia-restore", group = "cuda" },
 ], [
-    { package = "vhs-upscaler", group = "cpu" },
-    { package = "vhs-upscaler", group = "directml" },
+    { package = "video-ia-restore", group = "cpu" },
+    { package = "video-ia-restore", group = "directml" },
 ], [
-    { package = "vhs-upscaler", group = "cuda" },
-    { package = "vhs-upscaler", group = "directml" },
+    { package = "video-ia-restore", group = "cuda" },
+    { package = "video-ia-restore", group = "directml" },
 ]]
 
 [[package]]
@@ -807,7 +807,7 @@ wheels = [
 ]
 
 [[package]]
-name = "vhs-upscaler"
+name = "video-ia-restore"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -825,7 +825,7 @@ cpu = [
     { name = "onnxruntime" },
 ]
 cuda = [
-    { name = "onnxruntime-gpu", extra = ["cuda", "cudnn"], marker = "extra == 'group-12-vhs-upscaler-cuda' or (extra == 'group-12-vhs-upscaler-cpu' and extra == 'group-12-vhs-upscaler-directml')" },
+    { name = "onnxruntime-gpu", extra = ["cuda", "cudnn"], marker = "extra == 'group-16-video-ia-restore-cuda' or (extra == 'group-16-video-ia-restore-cpu' and extra == 'group-16-video-ia-restore-directml')" },
 ]
 dev = [
     { name = "pytest" },

@@ -13,7 +13,7 @@ from ..models import download, download_for_backend, get_model
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Descarga de modelos de IA para VHS Upscaler")
+    parser = argparse.ArgumentParser(description="Descarga de modelos de IA para Video-IA-Restore")
     parser.add_argument("--backend", default="cpu", choices=["cpu", "cuda", "directml"],
                         help="Backend elegido para esta PC")
     parser.add_argument("--model", default=None, help="Descargar solo un modelo por su id")
