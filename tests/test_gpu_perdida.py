@@ -32,7 +32,7 @@ from vhs_upscaler.inference import (
 # El texto exacto que solto onnxruntime aquella noche.
 ERROR_REAL = (
     "[ONNXRuntimeError] : 1 : FAIL : CUDA failure 999: unknown error ; GPU=0 ; "
-    "hostname=MKDSK ; file=onnxruntime/core/providers/cuda/gpu_data_transfer.cc ; "
+    "file=onnxruntime/core/providers/cuda/gpu_data_transfer.cc ; "
     "line=92 ; expr=cudaMemcpyAsync(dst_data, src_data, bytes, "
     "cudaMemcpyHostToDevice, static_cast<cudaStream_t>(stream.GetHandle()));"
 )
